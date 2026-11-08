@@ -38,7 +38,11 @@ export async function api(path, { method = "GET", body } = {}) {
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const res = await fetch(`/api${path}`, {
+  // Phase 3: VITE_API_BASE points at the Render backend in production
+  // (e.g. https://switchboard-api.onrender.com). Empty in local dev, where
+  // the Vite proxy forwards /api to localhost:3001.
+  const apiBase = import.meta.env.VITE_API_BASE ?? "";
+  const res = await fetch(`${apiBase}/api${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
