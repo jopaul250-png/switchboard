@@ -1,22 +1,23 @@
 import db from "../db.js";
 
-export const MAX_FREE_WORKSPACES = 2;
+// Re-exported for callers that import the constant alongside the middleware
+// (workspace.routes.js uses it for the PATCH downgrade-bypass guard).
+export { MAX_FREE_WORKSPACES } from "./planLimitsMeta.js";
+import { MAX_FREE_WORKSPACES } from "./planLimitsMeta.js";
 
 /**
  * Free tier hard cap: a user may own at most 2 workspaces while their
  * slots are consumed by free workspaces. Upgrading a workspace to
  * 'premium' releases a free slot (Trello-style plan semantics).
  */
-export default function planLimits(req, res, next) {
+export default async function planLimits(req, res, next) {
   const newPlan = req.body?.plan_type === "premium" ? "premium" : "free";
   if (newPlan === "premium") return next(); // premium creation unrestricted in v1
 
-  const { free: freeUsed, total } = db
+  const { free: freeUsed } = await db
     .prepare(
-      `SELECT
-         SUM(CASE WHEN plan_type = 'free' THEN 1 ELSE 0 END) AS free,
-         COUNT(*) AS total
-       FROM client_workspaces WHERE owner_id = ?`
+      `SELECT COUNT(*) AS free
+       FROM client_workspaces WHERE owner_id = ? AND plan_type = 'free'`
     )
     .get(req.user.id);
 

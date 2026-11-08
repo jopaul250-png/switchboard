@@ -6,6 +6,7 @@ server/.env
 *.db
 *.db-wal
 *.db-shm
+server/backups/
 .DS_Store
 Thumbs.db
 *.log

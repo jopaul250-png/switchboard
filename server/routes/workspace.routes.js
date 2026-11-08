@@ -1,14 +1,14 @@
 import { Router } from "express";
 import db, { seedPulseQueues } from "../db.js";
-import planLimits from "../middleware/planLimits.js";
+import planLimits, { MAX_FREE_WORKSPACES } from "../middleware/planLimits.js";
 import workspaceScope from "../middleware/workspaceScope.js";
 import { scopeSummary } from "./task.routes.js";
 
 const router = Router();
 
 /** GET / — owned list + unread pulse totals (sidebar badges) */
-router.get("/", (req, res) => {
-  const rows = db
+router.get("/", async (req, res) => {
+  const rows = await db
     .prepare(
       `SELECT w.*,
               w.hours_manual + COALESCE((SELECT SUM(duration_seconds) FROM time_logs tl WHERE tl.workspace_id = w.id), 0) / 3600.0
@@ -22,11 +22,19 @@ router.get("/", (req, res) => {
        ORDER BY w.created_at ASC`
     )
     .all(req.user.id);
-  res.json({ workspaces: rows });
+  // Postgres returns bigint aggregates (SUM/COUNT) as strings; normalize so
+  // the frontend (and tests) always see numbers. SQLite is unaffected.
+  const workspaces = rows.map((w) => ({
+    ...w,
+    hours_used: Number(w.hours_used ?? 0),
+    pulse_unread: Number(w.pulse_unread ?? 0),
+    open_tasks: Number(w.open_tasks ?? 0),
+  }));
+  res.json({ workspaces });
 });
 
 /** POST / — free-tier cap enforced here */
-router.post("/", planLimits, (req, res) => {
+router.post("/", planLimits, async (req, res) => {
   const name = String(req.body?.name || "").trim();
   if (!name) return res.status(400).json({ error: "Workspace name is required" });
   if (name.length > 60) return res.status(400).json({ error: "Name too long (max 60 chars)" });
@@ -36,35 +44,38 @@ router.post("/", planLimits, (req, res) => {
     ? Math.max(0, Number(req.body.contract_hours))
     : 40;
 
-  const tx = db.transaction(() => {
-    const info = db
+  const workspace = await db.tx(async (client) => {
+    const { lastID } = await db
       .prepare(
-        "INSERT INTO client_workspaces (name, owner_id, plan_type, contract_hours) VALUES (?, ?, ?, ?)"
+        "INSERT INTO client_workspaces (name, owner_id, plan_type, contract_hours) VALUES (?, ?, ?, ?) RETURNING id"
       )
       .run(name, req.user.id, plan, contractHours);
-    const id = info.lastInsertRowid;
-    seedPulseQueues(id);
-    return db.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(id);
+    await seedPulseQueues(lastID, client);
+    return db.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(lastID);
   });
 
-  res.status(201).json({ workspace: tx() });
+  res.status(201).json({ workspace });
 });
 
 /** GET /:workspaceId — detail incl. derived scope summary */
-router.get("/:workspaceId", workspaceScope, (req, res) => {
-  const scope = scopeSummary(req.workspace.id);
-  const unread = db
+router.get("/:workspaceId", workspaceScope, async (req, res) => {
+  const scope = await scopeSummary(req.workspace.id);
+  const unread = await db
     .prepare("SELECT COALESCE(SUM(unread_count), 0) AS t FROM pulse_feeds WHERE workspace_id = ?")
-    .get(req.workspace.id).t;
+    .get(req.workspace.id);
   // hours_used exposed to the client is always the derived meter value
   res.json({
-    workspace: { ...req.workspace, hours_used: scope.hours_used, pulse_unread: unread },
+    workspace: {
+      ...req.workspace,
+      hours_used: scope.hours_used,
+      pulse_unread: Number(unread.t),
+    },
     scope,
   });
 });
 
 /** PATCH /workspaces/:id — rename / billing switch / scope guardrail inputs */
-router.patch("/:workspaceId", workspaceScope, (req, res) => {
+router.patch("/:workspaceId", workspaceScope, async (req, res) => {
   const w = req.workspace;
   const updates = {};
   const errors = [];
@@ -98,20 +109,34 @@ router.patch("/:workspaceId", workspaceScope, (req, res) => {
   if (errors.length) return res.status(400).json({ error: errors.join("; ") });
   if (!Object.keys(updates).length) return res.status(400).json({ error: "Nothing to update" });
 
-  const setSql = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
-  db.prepare(`UPDATE client_workspaces SET ${setSql} WHERE id = ?`).run(
-    ...Object.values(updates),
-    w.id
-  );
+  // Beta-hardening fix: prevent premium→free downgrade when the 2-free-slot
+  // budget is already exhausted (mirrors planLimits on creation).
+  if (updates.plan_type === "free" && w.plan_type === "premium") {
+    const { free: freeUsed } = await db
+      .prepare("SELECT COUNT(*) AS free FROM client_workspaces WHERE owner_id = ? AND plan_type = 'free'")
+      .get(w.owner_id);
+    if (freeUsed >= MAX_FREE_WORKSPACES) {
+      return res.status(402).json({
+        error: `Cannot downgrade: Free plan is limited to ${MAX_FREE_WORKSPACES} workspaces (${freeUsed}/${MAX_FREE_WORKSPACES} used).`,
+        code: "WORKSPACE_LIMIT",
+        limit: MAX_FREE_WORKSPACES,
+      });
+    }
+  }
 
-  const fresh = db.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(w.id);
-  const scope = scopeSummary(w.id);
+  const setSql = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
+  await db
+    .prepare(`UPDATE client_workspaces SET ${setSql} WHERE id = ?`)
+    .run(...Object.values(updates), w.id);
+
+  const fresh = await db.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(w.id);
+  const scope = await scopeSummary(w.id);
   res.json({ workspace: { ...fresh, hours_used: scope.hours_used }, scope });
 });
 
 /** DELETE /workspaces/:id — cascades children */
-router.delete("/:workspaceId", workspaceScope, (req, res) => {
-  db.prepare("DELETE FROM client_workspaces WHERE id = ?").run(req.workspace.id);
+router.delete("/:workspaceId", workspaceScope, async (req, res) => {
+  await db.prepare("DELETE FROM client_workspaces WHERE id = ?").run(req.workspace.id);
   res.status(204).end();
 });
 

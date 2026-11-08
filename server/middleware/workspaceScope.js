@@ -4,11 +4,11 @@ import db from "../db.js";
  * Ensures :workspaceId belongs to req.user. Attaches req.workspace.
  * 404 (not 403) so we never leak workspace existence.
  */
-export default function workspaceScope(req, res, next) {
+export default async function workspaceScope(req, res, next) {
   const id = Number(req.params.workspaceId);
   if (!id || Number.isNaN(id)) return res.status(400).json({ error: "Invalid workspace id" });
 
-  const ws = db
+  const ws = await db
     .prepare("SELECT * FROM client_workspaces WHERE id = ? AND owner_id = ?")
     .get(id, req.user.id);
 

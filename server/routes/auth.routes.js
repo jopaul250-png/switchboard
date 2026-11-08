@@ -15,9 +15,11 @@ router.get("/me", authRequired, (req, res) => {
  * Confirms the caller knows their MAIN account password without
  * invalidating the session. Wrong password → 401, no enumeration.
  */
-router.post("/verify-password", authRequired, (req, res) => {
+router.post("/verify-password", authRequired, async (req, res) => {
   const password = String(req.body?.password || "");
-  const row = db.prepare("SELECT password_hash FROM users WHERE id = ?").get(req.user.id);
+  const row = await db
+    .prepare("SELECT password_hash FROM users WHERE id = ?")
+    .get(req.user.id);
   if (!row || !comparePassword(password, row.password_hash)) {
     return res.status(401).json({ error: "Incorrect password" });
   }
@@ -28,7 +30,7 @@ function validateEmail(email) {
   return typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-router.post("/register", (req, res) => {
+router.post("/register", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
 
@@ -37,24 +39,26 @@ router.post("/register", (req, res) => {
     return res.status(400).json({ error: "Password must be at least 8 characters" });
 
   try {
-    const info = db
-      .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?)")
+    const { lastID } = await db
+      .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
       .run(email, hashPassword(password));
-    const user = { id: info.lastInsertRowid, email };
+    const user = { id: lastID, email };
     res.status(201).json({ token: signToken(user), user });
   } catch (err) {
-    if (err.message?.includes("UNIQUE")) {
+    // 23505 = Postgres unique violation; SQLite includes 'UNIQUE' in message
+    if (err.code === "23505" || err.message?.includes("UNIQUE")) {
       return res.status(409).json({ error: "An account with that email already exists" });
     }
+    console.error(err);
     res.status(500).json({ error: "Registration failed" });
   }
 });
 
-router.post("/login", (req, res) => {
+router.post("/login", async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
 
-  const row = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+  const row = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
   if (!row) return res.status(401).json({ error: "Invalid email or password" });
 
   if (!comparePassword(password, row.password_hash)) {

@@ -11,14 +11,14 @@ const router = Router();
  *  - Manual adjustments live in client_workspaces.hours_manual, kept separate.
  *  hours_used (what the Scope Meter renders) = manual + tracked.
  */
-export function scopeSummary(workspaceId) {
-  const w = db
+export async function scopeSummary(workspaceId) {
+  const w = await db
     .prepare("SELECT contract_hours, hours_manual FROM client_workspaces WHERE id = ?")
     .get(workspaceId);
-  const trackedSeconds = db
+  const tracked = await db
     .prepare("SELECT COALESCE(SUM(duration_seconds), 0) AS t FROM time_logs WHERE workspace_id = ?")
-    .get(workspaceId).t;
-  const tracked_hours = trackedSeconds / 3600;
+    .get(workspaceId);
+  const tracked_hours = Number(tracked.t) / 3600;
   const manual_hours = w.hours_manual || 0;
   return {
     hours_used: manual_hours + tracked_hours,
@@ -31,23 +31,23 @@ export function scopeSummary(workspaceId) {
 // All routes expect req.workspace
 
 /** GET /workspaces/:id/tasks?status= */
-router.get("/", (req, res) => {
+router.get("/", async (req, res) => {
   const { status } = req.query;
   let rows;
   if (status && ["todo", "in_progress", "done"].includes(status)) {
-    rows = db
+    rows = await db
       .prepare("SELECT * FROM task_lists WHERE workspace_id = ? AND status = ? ORDER BY created_at DESC")
       .all(req.workspace.id, status);
   } else {
-    rows = db
+    rows = await db
       .prepare("SELECT * FROM task_lists WHERE workspace_id = ? ORDER BY created_at DESC")
       .all(req.workspace.id);
   }
-  res.json({ tasks: rows, scope: scopeSummary(req.workspace.id) });
+  res.json({ tasks: rows, scope: await scopeSummary(req.workspace.id) });
 });
 
 /** POST /workspaces/:id/tasks */
-router.post("/", (req, res) => {
+router.post("/", async (req, res) => {
   const title = String(req.body?.title || "").trim();
   if (!title) return res.status(400).json({ error: "Task title is required" });
 
@@ -57,19 +57,16 @@ router.post("/", (req, res) => {
   const hours = Number(req.body?.estimated_hours);
   const estimatedHours = Number.isFinite(hours) && hours >= 0 ? hours : 1;
 
-  const tx = db.transaction(() => {
-    const info = db
-      .prepare(
-        "INSERT INTO task_lists (workspace_id, title, status, estimated_hours, assigned_to) VALUES (?, ?, ?, ?, ?)"
-      )
-      .run(req.workspace.id, title, status, estimatedHours, req.body?.assigned_to ?? null);
-    return Number(info.lastInsertRowid);
-  });
   // Note: even when created directly as done, estimated hours are forecast —
   // the Scope Meter only counts actual tracked time (P2 model).
+  const { lastID } = await db
+    .prepare(
+      "INSERT INTO task_lists (workspace_id, title, status, estimated_hours, assigned_to) VALUES (?, ?, ?, ?, ?) RETURNING id"
+    )
+    .run(req.workspace.id, title, status, estimatedHours, req.body?.assigned_to ?? null);
 
-  const task = db.prepare("SELECT * FROM task_lists WHERE id = ?").get(tx());
-  res.status(201).json({ task, scope: scopeSummary(req.workspace.id) });
+  const task = await db.prepare("SELECT * FROM task_lists WHERE id = ?").get(lastID);
+  res.status(201).json({ task, scope: await scopeSummary(req.workspace.id) });
 });
 
 /**
@@ -78,8 +75,8 @@ router.post("/", (req, res) => {
  * forecasting only. Actuals are owned exclusively by time_logs / manual adjust.
  * Response still carries the fresh scope summary for instant UI updates.
  */
-router.patch("/:taskId", (req, res) => {
-  const row = db
+router.patch("/:taskId", async (req, res) => {
+  const row = await db
     .prepare("SELECT * FROM task_lists WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.taskId), req.workspace.id);
   if (!row) return res.status(404).json({ error: "Task not found" });
@@ -92,31 +89,30 @@ router.patch("/:taskId", (req, res) => {
     return res.status(400).json({ error: "Invalid status" });
   }
 
-  const tx = db.transaction(() => {
+  await db.tx(async () => {
     if (status !== undefined) {
-      db.prepare("UPDATE task_lists SET status = ? WHERE id = ?").run(status, row.id);
+      await db.prepare("UPDATE task_lists SET status = ? WHERE id = ?").run(status, row.id);
     }
     if (req.body?.assigned_to !== undefined) {
-      db.prepare("UPDATE task_lists SET assigned_to = ? WHERE id = ?").run(
+      await db.prepare("UPDATE task_lists SET assigned_to = ? WHERE id = ?").run(
         req.body.assigned_to,
         row.id
       );
     }
   });
-  tx();
 
-  const task = db.prepare("SELECT * FROM task_lists WHERE id = ?").get(row.id);
-  res.json({ task, scope: scopeSummary(req.workspace.id) });
+  const task = await db.prepare("SELECT * FROM task_lists WHERE id = ?").get(row.id);
+  res.json({ task, scope: await scopeSummary(req.workspace.id) });
 });
 
 /** DELETE /workspaces/:id/tasks/:taskId — P2: no meter mutation (estimates ≠ actuals) */
-router.delete("/:taskId", (req, res) => {
-  const row = db
+router.delete("/:taskId", async (req, res) => {
+  const row = await db
     .prepare("SELECT * FROM task_lists WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.taskId), req.workspace.id);
   if (!row) return res.status(404).json({ error: "Task not found" });
 
-  db.prepare("DELETE FROM task_lists WHERE id = ?").run(row.id);
+  await db.prepare("DELETE FROM task_lists WHERE id = ?").run(row.id);
 
   res.status(204).end();
 });

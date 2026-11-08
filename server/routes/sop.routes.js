@@ -6,34 +6,34 @@ const router = Router();
 // All routes here expect req.workspace (workspaceScope applied at mount)
 
 /** GET / — card list */
-router.get("/", (req, res) => {
-  const rows = db
+router.get("/", async (req, res) => {
+  const rows = await db
     .prepare("SELECT * FROM sop_documents WHERE workspace_id = ? ORDER BY updated_at DESC")
     .all(req.workspace.id);
   res.json({ sops: rows });
 });
 
 /** POST / */
-router.post("/", (req, res) => {
+router.post("/", async (req, res) => {
   const title = String(req.body?.title || "").trim();
   if (!title) return res.status(400).json({ error: "Title is required" });
 
   const content = String(req.body?.content ?? "");
   const category = String(req.body?.category || "general").trim();
 
-  const info = db
+  const { lastID } = await db
     .prepare(
-      "INSERT INTO sop_documents (workspace_id, title, content, category) VALUES (?, ?, ?, ?)"
+      "INSERT INTO sop_documents (workspace_id, title, content, category) VALUES (?, ?, ?, ?) RETURNING id"
     )
     .run(req.workspace.id, title, content, category || "general");
 
-  const sop = db.prepare("SELECT * FROM sop_documents WHERE id = ?").get(info.lastInsertRowid);
+  const sop = await db.prepare("SELECT * FROM sop_documents WHERE id = ?").get(lastID);
   res.status(201).json({ sop });
 });
 
-/** Duplicated GET :sopId comment removed — detail */
-router.get("/:sopId", (req, res) => {
-  const row = db
+/** GET :sopId — detail */
+router.get("/:sopId", async (req, res) => {
+  const row = await db
     .prepare("SELECT * FROM sop_documents WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.sopId), req.workspace.id);
   if (!row) return res.status(404).json({ error: "SOP not found" });
@@ -41,8 +41,8 @@ router.get("/:sopId", (req, res) => {
 });
 
 /** PUT — detail / update */
-router.put("/:sopId", (req, res) => {
-  const row = db
+router.put("/:sopId", async (req, res) => {
+  const row = await db
     .prepare("SELECT * FROM sop_documents WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.sopId), req.workspace.id);
   if (!row) return res.status(404).json({ error: "SOP not found" });
@@ -52,19 +52,20 @@ router.put("/:sopId", (req, res) => {
   const category = "category" in req.body ? String(req.body.category).trim() : row.category;
   if (!title) return res.status(400).json({ error: "Title is required" });
 
-  db.prepare(
-    "UPDATE sop_documents SET title = ?, content = ?, category = ?, updated_at = datetime('now') WHERE id = ?"
-  ).run(title, content, category, row.id);
+  // JS-generated ISO timestamp: dialect-agnostic (no SQLite/PG SQL default).
+  await db
+    .prepare("UPDATE sop_documents SET title = ?, content = ?, category = ?, updated_at = ? WHERE id = ?")
+    .run(title, content, category, new Date().toISOString(), row.id);
 
-  res.json({ sop: db.prepare("SELECT * FROM sop_documents WHERE id = ?").get(row.id) });
+  res.json({ sop: await db.prepare("SELECT * FROM sop_documents WHERE id = ?").get(row.id) });
 });
 
 /** DELETE /:sopId */
-router.delete("/:sopId", (req, res) => {
-  const info = db
+router.delete("/:sopId", async (req, res) => {
+  const { changes } = await db
     .prepare("DELETE FROM sop_documents WHERE id = ? AND workspace_id = ?")
     .run(Number(req.params.sopId), req.workspace.id);
-  if (!info.changes) return res.status(404).json({ error: "SOP not found" });
+  if (!changes) return res.status(404).json({ error: "SOP not found" });
   res.status(204).end();
 });
 

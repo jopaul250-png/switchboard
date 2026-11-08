@@ -1,7 +1,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import db, { migrate } from "./db.js";
+import { migrate } from "./db.js";
 import authRequired from "./middleware/authRequired.js";
 import workspaceScope from "./middleware/workspaceScope.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -18,8 +18,21 @@ const PORT = process.env.PORT || 3001;
 /* P5: the lib/jwt.js + lib/crypto.js modules fail boot in production when
    secrets are missing or insecure. Dev-only fallbacks stay local to dev. */
 
-migrate();
-app.use(cors());
+// Per-request first-best middlewares
+app.use(
+  cors({
+    // Phase 3 config: exact-origins allowlist in production, open in dev.
+    ...(process.env.CORS_ORIGIN
+      ? {
+          origin: String(process.env.CORS_ORIGIN)
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+          credentials: true,
+        }
+      : {}),
+  })
+);
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (req, res) => res.json({ ok: true, app: "switchboard" }));
@@ -44,6 +57,15 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Internal server error" });
 });
 
-app.listen(PORT, () => {
-  console.log(`[switchboard] API ready on http://localhost:${PORT}`);
-});
+// Phase 2: idempotent schema migration runs before listening (Postgres or
+// SQLite depending on DATABASE_URL). Boot fails loudly if the DB is unreachable.
+migrate()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`[switchboard] API ready on http://localhost:${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error("[switchboard] Boot aborted: database migration failed:", err.message);
+    process.exit(1);
+  });
