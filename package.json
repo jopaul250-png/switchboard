@@ -1,0 +1,14 @@
+{
+  "name": "switchboard",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Unified Client Hub for Virtual Assistants",
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "--comment": "run setup once: npm run install:all"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

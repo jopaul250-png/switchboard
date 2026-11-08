@@ -1,0 +1,93 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Thin dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #334155 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #334155;
+  border-radius: 8px;
+}
+
+/* Markdown preview styling for the SOP split-pane (no typography plugin) */
+.sop-preview h1,
+.sop-preview h2,
+.sop-preview h3 {
+  color: theme("colors.slate.100");
+  font-weight: 700;
+  margin: 1.1rem 0 0.5rem;
+  line-height: 1.25;
+}
+.sop-preview h1 { font-size: 1.4rem; }
+.sop-preview h2 { font-size: 1.15rem; }
+.sop-preview h3 { font-size: 1rem; }
+.sop-preview p { color: theme("colors.slate.300"); margin: 0.55rem 0; line-height: 1.6; }
+.sop-preview ul,
+.sop-preview ol {
+  color: theme("colors.slate.300");
+  margin: 0.5rem 0 0.5rem 1.25rem;
+  list-style: disc;
+  line-height: 1.6;
+}
+.sop-preview ol { list-style: decimal; }
+.sop-preview li { margin: 0.2rem 0; }
+.sop-preview strong { color: theme("colors.slate.100"); font-weight: 600; }
+.sop-preview code {
+  background: theme("colors.slate.800");
+  color: theme("colors.emerald.300");
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+  font-size: 0.85em;
+}
+.sop-preview pre {
+  background: theme("colors.slate.900");
+  border: 1px solid theme("colors.slate.800");
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
+  margin: 0.6rem 0;
+}
+.sop-preview pre code {
+  background: transparent;
+  color: theme("colors.emerald.200");
+  padding: 0;
+}
+.sop-preview blockquote {
+  border-left: 3px solid theme("colors.indigo.500");
+  padding-left: 0.75rem;
+  color: theme("colors.slate.400");
+  margin: 0.6rem 0;
+}
+.sop-preview table {
+  border-collapse: collapse;
+  margin: 0.6rem 0;
+  width: 100%;
+}
+.sop-preview th,
+.sop-preview td {
+  border: 1px solid theme("colors.slate.800");
+  padding: 0.35rem 0.6rem;
+  color: theme("colors.slate.300");
+}
+.sop-preview th { background: theme("colors.slate.900"); color: theme("colors.slate.100"); }
+.sop-preview a { color: theme("colors.indigo.400"); text-decoration: underline; }
+.sop-preview hr { border-color: theme("colors.slate.800"); margin: 1rem 0; }
+
+/* Toast slide-in (ui.jsx <Toast/>) */
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "feat/*", "fix/*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20
+        cache: 'npm'
+
+    - name: Install Dependencies
+      run: npm run install:all
+
+    - name: Run Smoke Tests
+      run: node server/smoke.test.mjs
+      env:
+        JWT_SECRET: ci_test_secret_32_characters_minimum_required
+        ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+    - name: Build Frontend
+      run: npm --prefix client run build
