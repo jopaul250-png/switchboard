@@ -29,6 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { resolveDbTarget } from "../lib/dbTarget.js";
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = process.argv.slice(2);
@@ -116,36 +117,25 @@ async function runFiles(port, files, childEnv) {
 
 (async () => {
   // ── Database target selection (security hardening) ─────────────────────
-  // Tests run against LOCAL databases only. The target is explicit in every
-  // mode; a non-local host refuses to run — never connects.
-  //   SMOKE_TARGET=postgres → DATABASE_URL must point at localhost/127.0.0.1
-  //                           (CI service container or a local dev Postgres)
-  //   default / =sqlite     → SQLite throwaway temp file; DATABASE_URL=""
-  const target = process.env.SMOKE_TARGET === "postgres" ? "postgres" : "sqlite";
-  const rawUrl = process.env.DATABASE_URL || "";
+  // Delegated to lib/dbTarget.js: validates with a real URL parser, refuses
+  // non-local Postgres hosts and host-overriding query params, and pins
+  // DATABASE_URL to "" in SQLite mode so no ambient or .env value can leak
+  // into the spawned server process. Errors are safe to print (no URL/creds).
+  const resolved = resolveDbTarget({
+    smokeTarget: process.env.SMOKE_TARGET,
+    databaseUrl: process.env.DATABASE_URL,
+  });
+  if (resolved.error) {
+    console.error(`# REFUSED: ${resolved.error}`);
+    process.exit(1);
+  }
+  const target = resolved.target;
+  const rawUrl = resolved.databaseUrl;
 
   if (target === "postgres") {
-    if (!rawUrl) {
-      console.error("# REFUSED: SMOKE_TARGET=postgres but DATABASE_URL is not set");
-      process.exit(1);
-    }
-    let host = "";
-    try {
-      host = new URL(rawUrl).hostname;
-    } catch {
-      console.error("# REFUSED: DATABASE_URL is not a parseable URL");
-      process.exit(1);
-    }
-    if (!/^localhost$|^127\.0\.0\.1$|^::1$|^\[::1\]$/.test(host)) {
-      // Never print the URL — the host name alone is enough to diagnose.
-      console.error(
-        `# REFUSED: DATABASE_URL host "${host}" is not localhost/127.0.0.1 — tests run against local databases only`
-      );
-      process.exit(1);
-    }
     console.log(`# target: Postgres (${rawUrl.replace(/:[^:@/]+@/, ":***@")})`);
   } else {
-    console.log(`# target: SQLite (${rawUrl ? "SMOKE_TARGET=sqlite overrides DATABASE_URL" : "no DATABASE_URL"})`);
+    console.log(`# target: SQLite (throwaway temp file; DATABASE_URL pinned empty)`);
   }
 
   const isPostgres = target === "postgres";
@@ -155,7 +145,7 @@ async function runFiles(port, files, childEnv) {
     JWT_SECRET: TEST_JWT_SECRET,
     ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
     SWITCHBOARD_ALLOW_TX_INJECTION: "1", // header-gated + NODE_ENV-gated
-    DATABASE_URL: isPostgres ? rawUrl : "", // explicit in EVERY mode (leak-proof)
+    DATABASE_URL: rawUrl, // explicit in EVERY mode (leak-proof; "" for SQLite)
   };
 
   // Fresh throwaway SQLite files; never server/data/switchboard.db
