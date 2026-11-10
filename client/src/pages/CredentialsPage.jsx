@@ -23,30 +23,39 @@ export default function CredentialsPage() {
 
   /* ---------------- Absolute privacy gate state ---------------- */
   const [locked, setLocked] = useState(true); // locked on every page entry
+  // Phase 1.1: short-lived server-issued vault token. Held in memory only
+  // (never persisted); cleared on every re-lock. The reveal route requires it.
+  const [vaultToken, setVaultToken] = useState(null);
   const [pw, setPw] = useState("");
   const [checking, setChecking] = useState(false);
   const [gateError, setGateError] = useState(null);
   const lastActivity = useRef(Date.now());
 
+  /* Single re-lock path: the UI gate AND the server-side vault token die
+     together, so a stale token can never outlive the visible lock. */
+  const lock = () => {
+    setLocked(true);
+    setVaultToken(null);
+    setPw("");
+    setGateError(null);
+  };
+
   /* Re-lock when the workspace context changes (switching clients) */
   useEffect(() => {
     if (!active) return;
-    setLocked(true);
-    setPw("");
-    setGateError(null);
+    lock();
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* Lock instantly on leaving the page context (window blur / tab hidden) */
   useEffect(() => {
     if (locked) return;
-    const relock = () => setLocked(true);
     const onVisibility = () => {
-      if (document.hidden) relock();
+      if (document.hidden) lock();
     };
-    window.addEventListener("blur", relock);
+    window.addEventListener("blur", lock);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.removeEventListener("blur", relock);
+      window.removeEventListener("blur", lock);
       document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [locked]);
@@ -60,7 +69,7 @@ export default function CredentialsPage() {
     const events = ["mousedown", "mousemove", "keydown", "scroll", "touchstart"];
     events.forEach((ev) => window.addEventListener(ev, bump, { passive: true }));
     const t = setInterval(() => {
-      if (Date.now() - lastActivity.current > IDLE_LOCK_MS) setLocked(true);
+      if (Date.now() - lastActivity.current > IDLE_LOCK_MS) lock();
     }, 5000);
     return () => {
       events.forEach((ev) => window.removeEventListener(ev, bump));
@@ -79,14 +88,15 @@ export default function CredentialsPage() {
     fetchCreds();
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /* ------- Re-auth gate: verifies main account password, keeps JWT ------- */
+  /* ------- Re-auth gate: verifies main account password, mints vault token ------- */
   const unlock = async (e) => {
     e?.preventDefault?.();
     if (checking || !pw) return;
     setChecking(true);
     setGateError(null);
     try {
-      await api("/auth/verify-password", { method: "POST", body: { password: pw } });
+      const d = await api("/auth/verify-password", { method: "POST", body: { password: pw } });
+      setVaultToken(d.vault_token); // short-lived, user-bound (server-enforced)
       setLocked(false);
       setPw("");
       lastActivity.current = Date.now();
@@ -100,9 +110,13 @@ export default function CredentialsPage() {
   /* ------- the dedicated decryption route, surfaced via "Reveal" ------- */
   const reveal = async (cred) => {
     try {
-      const d = await api(`/workspaces/${active.id}/credentials/${cred.id}/reveal`, {
-        method: "POST",
-      });
+      const d = await api(
+        `/workspaces/${active.id}/credentials/${cred.id}/reveal`,
+        {
+          method: "POST",
+          headers: { "X-Vault-Token": vaultToken || "" },
+        }
+      );
       const deadline = Date.now() + REVEAL_WINDOW_MS;
       const tick = setInterval(() => {
         const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
@@ -112,7 +126,14 @@ export default function CredentialsPage() {
       timers.current[cred.id] = tick;
       setRevealed((r) => ({ ...r, [cred.id]: { text: d.plaintext, left: 10 } }));
     } catch (err) {
-      setError(err.message);
+      if (err.body?.code === "VAULT_LOCKED" || err.status === 403) {
+        // Server says the vault is locked (expired/absent token) — re-lock and
+        // re-prompt for the account password.
+        lock();
+        setGateError("Vault session expired — enter your password again.");
+      } else {
+        setError(err.message);
+      }
     }
   };
 

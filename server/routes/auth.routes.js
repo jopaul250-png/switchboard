@@ -1,6 +1,6 @@
 import { Router } from "express";
 import db from "../db.js";
-import { signToken } from "../lib/jwt.js";
+import { signToken, signVaultToken } from "../lib/jwt.js";
 import { hashPassword, comparePassword } from "../lib/passwords.js";
 import authRequired from "../middleware/authRequired.js";
 
@@ -14,16 +14,20 @@ router.get("/me", authRequired, (req, res) => {
  * POST /auth/verify-password — re-auth gate for the credentials vault.
  * Confirms the caller knows their MAIN account password without
  * invalidating the session. Wrong password → 401, no enumeration.
+ *
+ * Phase 1.1: on success this ALSO issues a short-lived vault token
+ * (default 5 min, user-bound, distinct `purpose`). The credentials
+ * vault's reveal route requires it server-side (X-Vault-Token header).
  */
 router.post("/verify-password", authRequired, async (req, res) => {
   const password = String(req.body?.password || "");
   const row = await db
     .prepare("SELECT password_hash FROM users WHERE id = ?")
     .get(req.user.id);
-  if (!row || !comparePassword(password, row.password_hash)) {
+  if (!row || !(await comparePassword(password, row.password_hash))) {
     return res.status(401).json({ error: "Incorrect password" });
   }
-  res.json({ ok: true, user: req.user });
+  res.json({ ok: true, vault_token: signVaultToken(req.user.id), user: req.user });
 });
 
 function validateEmail(email) {

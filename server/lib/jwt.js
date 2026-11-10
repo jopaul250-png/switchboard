@@ -33,3 +33,31 @@ export function signToken(user) {
 export function verifyToken(token) {
   return jwt.verify(token, secret);
 }
+
+// ── Vault tokens (Phase 1.1) ────────────────────────────────────────────────
+// A separate, short-lived token PURPOSE for the credentials vault. The login
+// JWT carries no `purpose` claim, so it can never be replayed as a vault
+// token, and each vault token is bound to the user id it was issued for.
+const vaultTtlMinutes = () => {
+  const n = Number(process.env.VAULT_TOKEN_TTL_MINUTES);
+  return Number.isFinite(n) && n > 0 && n <= 120 ? n : 5; // default: 5 minutes
+};
+
+export function signVaultToken(userId) {
+  return jwt.sign({ id: userId, purpose: "vault" }, secret, {
+    expiresIn: `${vaultTtlMinutes()}m`,
+  });
+}
+
+/**
+ * Verify a vault token FOR A SPECIFIC USER. Throws on bad signature, expiry,
+ * wrong purpose (e.g. a login JWT), or a token minted for a different user.
+ * Callers must treat any throw as VAULT_LOCKED.
+ */
+export function verifyVaultToken(token, userId) {
+  const payload = jwt.verify(String(token || ""), secret);
+  if (payload.purpose !== "vault" || payload.id !== userId) {
+    throw new Error("Vault token is not valid for this user");
+  }
+  return payload;
+}

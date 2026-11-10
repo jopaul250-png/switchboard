@@ -32,8 +32,8 @@ export class ApiError extends Error {
  * stale token (401). Always throws ApiError so callers can react to `code`s
  * (e.g. WORKSPACE_LIMIT) and to `status` (402 paywall).
  */
-export async function api(path, { method = "GET", body } = {}) {
-  const headers = {};
+export async function api(path, { method = "GET", body, headers: extraHeaders = {} } = {}) {
+  const headers = { ...extraHeaders };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = getToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -58,7 +58,9 @@ export async function api(path, { method = "GET", body } = {}) {
   }
 
   if (!res.ok) {
-    if (res.status === 401) {
+    // A 401 from the vault re-auth gate (wrong vault password) must NOT
+    // destroy the session — the gate re-prompts. Any other 401 = stale JWT.
+    if (res.status === 401 && !path.startsWith("/auth/verify-password")) {
       clearToken();
       if (window.location.pathname !== "/login") window.location.href = "/login";
     }

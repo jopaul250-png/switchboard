@@ -35,7 +35,8 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   r = await call("/auth/verify-password", { method: "POST", body: { password: "wrongpass" }, token });
   ok("verify-password rejects wrong pw 401", r.status === 401);
   r = await call("/auth/verify-password", { method: "POST", body: { password: pass1 }, token });
-  ok("verify-password accepts real pw", r.status === 200 && r.data.ok === true);
+  ok("verify-password accepts real pw + issues vault token", r.status === 200 && r.data.ok === true && typeof r.data.vault_token === "string", `got ${r.status}`);
+  const vaultTokenA = r.data.vault_token; // required by every reveal below (Phase 1.1)
   r = await call("/auth/verify-password", { method: "POST", body: { password: pass1 } });
   ok("verify-password requires auth", r.status === 401);
 
@@ -73,8 +74,10 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   const cred = r.data.credential;
   ok("cred created_at is canonical ISO-8601-Z (Phase 0.2)", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(cred.created_at), `got ${cred.created_at}`);
   ok("list never echoes plaintext", !JSON.stringify(r.data).includes("PLAINTEXT-SECRET-XYZ"));
-  r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token });
+  r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token, headers: { "X-Vault-Token": vaultTokenA } });
   ok("reveal decrypts via dedicated route", r.status === 200 && r.data.plaintext === "PLAINTEXT-SECRET-XYZ");
+  r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token });
+  ok("reveal WITHOUT vault token → 403 VAULT_LOCKED (Phase 1.1)", r.status === 403 && r.data.code === "VAULT_LOCKED", `got ${r.status}`);
   r = await call(`/workspaces/${wsA.id}/credentials`, { token });
   ok("list shows masked ••••••••", r.data.credentials[0].masked_value === "••••••••");
 
@@ -190,7 +193,7 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}`, { method: "DELETE", token: tokenB });
   ok("B cannot delete A's credential → 404", r.status === 404);
   // tampering has not decrypted it for B either: secret still decrypts for A only via original route
-  r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token });
+  r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token, headers: { "X-Vault-Token": vaultTokenA } });
   ok("owner's reveal still works after B's attempts", r.status === 200 && r.data.plaintext === "PLAINTEXT-SECRET-XYZ");
 
   {

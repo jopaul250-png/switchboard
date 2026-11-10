@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db.js";
 import { encryptSecret, decryptSecret } from "../lib/crypto.js";
+import { verifyVaultToken } from "../lib/jwt.js";
 
 const router = Router();
 
@@ -45,12 +46,26 @@ router.post("/", async (req, res) => {
 /**
  * POST /workspaces/:id/credentials/:credId/reveal
  * Dedicated decryption route — opt-in only, returns plaintext once.
+ *
+ * Phase 1.1: SERVER-enforced vault gate. The caller must present the
+ * short-lived vault token issued by /auth/verify-password (X-Vault-Token
+ * header). Missing, expired, wrong-purpose (login JWT), or foreign-user
+ * tokens all → 403 VAULT_LOCKED; plaintext is never touched on denial.
  */
 router.post("/:credId/reveal", async (req, res) => {
   const row = await db
     .prepare("SELECT * FROM secure_credentials WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.credId), req.workspace.id);
   if (!row) return res.status(404).json({ error: "Credential not found" });
+
+  try {
+    verifyVaultToken(req.get("X-Vault-Token"), req.user.id);
+  } catch {
+    return res.status(403).json({
+      code: "VAULT_LOCKED",
+      error: "Vault is locked — verify your account password to reveal secrets",
+    });
+  }
 
   try {
     res.json({ id: row.id, plaintext: decryptSecret(row.enc_payload) });
