@@ -1,5 +1,7 @@
 // Switchboard end-to-end smoke test
-const BASE = "http://localhost:3001/api";
+// Base URL is configurable so the test runner can boot the API on a fresh,
+// never-before-used port (SMOKE_API_BASE). Falls back to the dev default.
+const BASE = process.env.SMOKE_API_BASE || "http://localhost:3001/api";
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = "") => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }

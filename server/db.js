@@ -35,9 +35,12 @@ if (IS_POSTGRES) {
     connectionTimeoutMillis: 10000,
   });
 } else {
-  const dataDir = path.join(__dirname, "data");
+  // SQLITE_PATH override exists so test runs can use a fresh throwaway DB
+  // file without ever touching the developer's local database.
+  const dbFile = process.env.SQLITE_PATH || path.join(__dirname, "data", "switchboard.db");
+  const dataDir = process.env.SQLITE_PATH ? path.dirname(dbFile) : path.join(__dirname, "data");
   if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
-  sqlite = new Database(path.join(dataDir, "switchboard.db"));
+  sqlite = new Database(dbFile);
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
 }

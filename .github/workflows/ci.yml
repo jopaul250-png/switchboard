@@ -10,6 +10,24 @@ jobs:
   test-and-build:
     runs-on: ubuntu-latest
 
+    # Real Postgres (service container) so the suite covers the Postgres
+    # code paths — db.tx() client binding, dialect SQL conversion, FK errors —
+    # alongside SQLite.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: switchboard
+          POSTGRES_PASSWORD: switchboard
+          POSTGRES_DB: switchboard_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U switchboard -d switchboard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     steps:
     - uses: actions/checkout@v4
 
@@ -18,15 +36,21 @@ jobs:
       with:
         node-version: 20
         cache: 'npm'
+        cache-dependency-path: |
+          package-lock.json
+          server/package-lock.json
+          client/package-lock.json
 
     - name: Install Dependencies
       run: npm run install:all
 
-    - name: Run Smoke Tests
-      run: node server/smoke.test.mjs
+    - name: Test suite (SQLite, fresh throwaway DB)
+      run: npm test
+
+    - name: Test suite (Postgres service container)
+      run: npm test
       env:
-        JWT_SECRET: ci_test_secret_32_characters_minimum_required
-        ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        DATABASE_URL: postgres://switchboard:switchboard@localhost:5432/switchboard_test
 
     - name: Build Frontend
       run: npm --prefix client run build

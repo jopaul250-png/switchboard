@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
     "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "test": "npm --prefix server run test",
     "--comment": "run setup once: npm run install:all"
   },
   "devDependencies": {

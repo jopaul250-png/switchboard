@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch index.js",
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node scripts/run-test.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
