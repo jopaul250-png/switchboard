@@ -45,6 +45,19 @@ CREATE TABLE IF NOT EXISTS secure_credentials (
 );
 CREATE INDEX IF NOT EXISTS idx_cred_ws ON secure_credentials(workspace_id);
 
+-- Phase 1.2: audit trail for credential reveals. Stores WHO attempted WHAT
+-- against WHICH credential and WHEN — never the secret, never the token.
+CREATE TABLE IF NOT EXISTS credential_access_log (
+  id            SERIAL PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  workspace_id  INTEGER NOT NULL REFERENCES client_workspaces(id) ON DELETE CASCADE,
+  credential_id INTEGER NOT NULL REFERENCES secure_credentials(id) ON DELETE CASCADE,
+  action        TEXT NOT NULL CHECK (action IN ('reveal','reveal_denied')),
+  created_at    TEXT NOT NULL DEFAULT (now()::text)
+);
+CREATE INDEX IF NOT EXISTS idx_credlog_cred ON credential_access_log(credential_id);
+CREATE INDEX IF NOT EXISTS idx_credlog_user ON credential_access_log(user_id);
+
 CREATE TABLE IF NOT EXISTS task_lists (
   id              SERIAL PRIMARY KEY,
   workspace_id    INTEGER NOT NULL REFERENCES client_workspaces(id) ON DELETE CASCADE,
