@@ -224,7 +224,7 @@ export default function SopsPage() {
                 {sop.content.replace(/[#*`>\-]/g, "").slice(0, 140) || "Empty document"}
               </p>
               <p className="mt-3 text-[10px] text-slate-600">
-                updated {new Date(sop.updated_at + "Z").toLocaleDateString()}
+                updated {new Date(sop.updated_at).toLocaleDateString()}
               </p>
             </button>
           ))}

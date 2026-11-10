@@ -15,6 +15,7 @@ import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
+import { normalizeRow } from "./lib/timestamps.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,9 +57,11 @@ function toPostgresSql(sql) {
 export async function query(sql, params = []) {
   if (IS_POSTGRES) {
     const result = await pool.query(toPostgresSql(sql), params);
+    result.rows.forEach(normalizeRow);
     return { rows: result.rows, rowCount: result.rowCount };
   }
   const rows = sqlite.prepare(sql).all(...params);
+  rows.forEach(normalizeRow);
   return { rows, rowCount: rows.length };
 }
 
@@ -86,17 +89,20 @@ const adapter = {
       async get(...params) {
         if (IS_POSTGRES) {
           const { rows } = await pool.query(toPostgresSql(sql), params);
-          return rows[0] ?? null;
+          return rows[0] ? normalizeRow(rows[0]) : null;
         }
-        return sqlite.prepare(sql).get(...params) ?? null;
+        return normalizeRow(sqlite.prepare(sql).get(...params) ?? null);
       },
       // async rows fetch (array)
       async all(...params) {
         if (IS_POSTGRES) {
           const { rows } = await pool.query(toPostgresSql(sql), params);
+          rows.forEach(normalizeRow);
           return rows;
         }
-        return sqlite.prepare(sql).all(...params);
+        const rows = sqlite.prepare(sql).all(...params);
+        rows.forEach(normalizeRow);
+        return rows;
       },
       async run(...params) {
         return run(sql, params);

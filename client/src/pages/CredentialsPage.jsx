@@ -193,7 +193,8 @@ export default function CredentialsPage() {
           <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
             {creds.map((c) => {
               const entry = revealed[c.id];
-              const dead = new Date(c.created_at + "Z").toLocaleDateString();
+              // API timestamps are canonical ISO 8601 UTC (Phase 0.2) — parse directly.
+              const dead = new Date(c.created_at).toLocaleDateString();
               return (
                 <div
                   key={c.id}

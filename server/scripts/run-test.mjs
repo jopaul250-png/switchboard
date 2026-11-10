@@ -24,7 +24,12 @@ import { fileURLToPath } from "node:url";
 
 const SERVER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const files = process.argv.slice(2);
-const targets = files.length ? files : ["smoke.test.mjs"];
+const targets = files.length
+  ? files
+  : fs
+      .readdirSync(SERVER_DIR)
+      .filter((f) => f.endsWith(".test.mjs"))
+      .sort();
 
 // Fake-but-valid test secrets (never real credentials; committed by design for CI).
 const TEST_JWT_SECRET = "ci_test_secret_32_characters_minimum_required";

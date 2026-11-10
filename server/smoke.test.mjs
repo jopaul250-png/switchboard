@@ -63,6 +63,7 @@ const call = async (path, { method = "GET", body, token } = {}) => {
   const sop = r.data.sop;
   r = await call(`/workspaces/${wsA.id}/sops/${sop.id}`, { method: "PUT", token, body: { title: "Brand Rules v2" } });
   ok("sop update", r.status === 200 && r.data.sop.title === "Brand Rules v2");
+  ok("sop updated_at is canonical ISO-8601-Z (Phase 0.2)", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(r.data.sop.updated_at), `got ${r.data.sop.updated_at}`);
   r = await call(`/workspaces/${wsA.id}/sops`, { token });
   ok("sop list", r.data.sops.length === 1);
 
@@ -70,6 +71,7 @@ const call = async (path, { method = "GET", body, token } = {}) => {
   r = await call(`/workspaces/${wsA.id}/credentials`, { method: "POST", token, body: { account_name: "Mailchimp", username: "ops@summit.co", encrypted_password_or_token: "PLAINTEXT-SECRET-XYZ" } });
   ok("cred create 201", r.status === 201);
   const cred = r.data.credential;
+  ok("cred created_at is canonical ISO-8601-Z (Phase 0.2)", /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(cred.created_at), `got ${cred.created_at}`);
   ok("list never echoes plaintext", !JSON.stringify(r.data).includes("PLAINTEXT-SECRET-XYZ"));
   r = await call(`/workspaces/${wsA.id}/credentials/${cred.id}/reveal`, { method: "POST", token });
   ok("reveal decrypts via dedicated route", r.status === 200 && r.data.plaintext === "PLAINTEXT-SECRET-XYZ");
