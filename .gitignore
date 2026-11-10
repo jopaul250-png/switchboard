@@ -3,6 +3,8 @@ node_modules/
 client/dist/
 server/data/
 server/.env
+.env
+.vercel/
 *.db
 *.db-wal
 *.db-shm
