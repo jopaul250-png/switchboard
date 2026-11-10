@@ -4,6 +4,7 @@ client/dist/
 server/data/
 server/.env
 .env
+.env.*
 .vercel/
 .ops/
 *.db
