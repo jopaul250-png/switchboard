@@ -65,7 +65,8 @@ const ok = (name, cond, extra = "") => {
   const countRow = await db
     .prepare("SELECT COUNT(*) AS c FROM task_lists WHERE workspace_id = ?")
     .get(wsId);
-  ok("3 concurrent txs all commit", news.filter(Boolean).length === 3 && countRow.c === 4, `committed ${news.length}, rows ${countRow.c}`);
+  // Postgres returns bigint aggregates (COUNT) as strings — normalize first.
+  ok("3 concurrent txs all commit", news.filter(Boolean).length === 3 && Number(countRow.c) === 4, `committed ${news.length}, rows ${countRow.c}`);
 
   console.log("— Cleanup —");
   await db.prepare("DELETE FROM client_workspaces WHERE id = ?").run(wsId);
