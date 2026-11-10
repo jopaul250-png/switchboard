@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db.js";
 import { encryptSecret, decryptSecret } from "../lib/crypto.js";
 import { verifyVaultToken } from "../lib/jwt.js";
+import { revealLimiter } from "../lib/rateLimits.js";
 
 const router = Router();
 
@@ -61,7 +62,7 @@ router.post("/", async (req, res) => {
  * Note: a 404 (credential not in this workspace) intentionally logs nothing —
  * the audit row requires a real credential_id (FK integrity over completeness).
  */
-router.post("/:credId/reveal", async (req, res) => {
+router.post("/:credId/reveal", revealLimiter, async (req, res) => {
   const row = await db
     .prepare("SELECT * FROM secure_credentials WHERE id = ? AND workspace_id = ?")
     .get(Number(req.params.credId), req.workspace.id);

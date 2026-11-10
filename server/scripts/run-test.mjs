@@ -146,6 +146,11 @@ async function runFiles(port, files, childEnv) {
     ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
     SWITCHBOARD_ALLOW_TX_INJECTION: "1", // header-gated + NODE_ENV-gated
     DATABASE_URL: rawUrl, // explicit in EVERY mode (leak-proof; "" for SQLite)
+    // Phase 1.3: the shared suite makes dozens of auth calls from one IP —
+    // lift the per-IP auth cap for the TEST server. The per-ACCOUNT login cap
+    // (RATE_LIMIT_LOGIN_ACCOUNT_MAX, default 5) is deliberately left at its
+    // production default so rate-limit.test.mjs proves real lockout behavior.
+    RATE_LIMIT_AUTH_IP_MAX: "100000",
   };
 
   // Fresh throwaway SQLite files; never server/data/switchboard.db

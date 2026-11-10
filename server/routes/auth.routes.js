@@ -2,6 +2,7 @@ import { Router } from "express";
 import db from "../db.js";
 import { signToken, signVaultToken } from "../lib/jwt.js";
 import { hashPassword, comparePassword } from "../lib/passwords.js";
+import { authIpLimiter, loginAccountLimiter } from "../lib/rateLimits.js";
 import authRequired from "../middleware/authRequired.js";
 
 const router = Router();
@@ -19,7 +20,7 @@ router.get("/me", authRequired, (req, res) => {
  * (default 5 min, user-bound, distinct `purpose`). The credentials
  * vault's reveal route requires it server-side (X-Vault-Token header).
  */
-router.post("/verify-password", authRequired, async (req, res) => {
+router.post("/verify-password", authIpLimiter, authRequired, async (req, res) => {
   const password = String(req.body?.password || "");
   const row = await db
     .prepare("SELECT password_hash FROM users WHERE id = ?")
@@ -34,7 +35,7 @@ function validateEmail(email) {
   return typeof email === "string" && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
-router.post("/register", async (req, res) => {
+router.post("/register", authIpLimiter, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
 
@@ -45,7 +46,7 @@ router.post("/register", async (req, res) => {
   try {
     const { lastID } = await db
       .prepare("INSERT INTO users (email, password_hash) VALUES (?, ?) RETURNING id")
-      .run(email, hashPassword(password));
+      .run(email, await hashPassword(password));
     const user = { id: lastID, email };
     res.status(201).json({ token: signToken(user), user });
   } catch (err) {
@@ -58,14 +59,14 @@ router.post("/register", async (req, res) => {
   }
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", authIpLimiter, loginAccountLimiter, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
 
   const row = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
   if (!row) return res.status(401).json({ error: "Invalid email or password" });
 
-  if (!comparePassword(password, row.password_hash)) {
+  if (!(await comparePassword(password, row.password_hash))) {
     return res.status(401).json({ error: "Invalid email or password" });
   }
   const user = { id: row.id, email: row.email };

@@ -2,10 +2,12 @@ import bcrypt from "bcryptjs";
 
 const ROUNDS = 10;
 
-export function hashPassword(plain) {
-  return bcrypt.hashSync(plain, ROUNDS);
+// Phase 1.3: async bcrypt everywhere — sync variants block the event loop
+// for the full hash cost on every login/register/verify-password call.
+export async function hashPassword(plain) {
+  return bcrypt.hash(plain, ROUNDS);
 }
 
-export function comparePassword(plain, hash) {
-  return bcrypt.compareSync(plain, hash);
+export async function comparePassword(plain, hash) {
+  return bcrypt.compare(plain, hash);
 }

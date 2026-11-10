@@ -1,7 +1,9 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import helmet from "helmet";
 import { migrate } from "./db.js";
+import { authIpLimiter } from "./lib/rateLimits.js";
 import authRequired from "./middleware/authRequired.js";
 import workspaceScope from "./middleware/workspaceScope.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -17,6 +19,16 @@ const PORT = process.env.PORT || 3001;
 
 /* P5: the lib/jwt.js + lib/crypto.js modules fail boot in production when
    secrets are missing or insecure. Dev-only fallbacks stay local to dev. */
+
+// Phase 1.3: Render terminates TLS in front of the app (one proxy hop), so
+// express-rate-limit must trust X-Forwarded-For to see the real client IP —
+// otherwise every request would share the proxy's IP and one attacker could
+// lock out everyone. 1 hop = Render's router.
+app.set("trust proxy", 1);
+
+// Baseline security headers on every response. CORP stays "cross-origin" so
+// the Vercel-hosted client keeps working against this API cross-origin.
+app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 
 // Per-request first-best middlewares
 app.use(
