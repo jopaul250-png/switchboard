@@ -89,17 +89,25 @@ router.patch("/:taskId", async (req, res) => {
     return res.status(400).json({ error: "Invalid status" });
   }
 
-  await db.tx(async () => {
-    if (status !== undefined) {
-      await db.prepare("UPDATE task_lists SET status = ? WHERE id = ?").run(status, row.id);
-    }
-    if (req.body?.assigned_to !== undefined) {
-      await db.prepare("UPDATE task_lists SET assigned_to = ? WHERE id = ?").run(
-        req.body.assigned_to,
-        row.id
-      );
-    }
-  });
+  try {
+    await db.tx(async (txDb) => {
+      if (status !== undefined) {
+        await txDb.prepare("UPDATE task_lists SET status = ? WHERE id = ?").run(status, row.id);
+      }
+      if (req.body?.assigned_to !== undefined) {
+        await txDb.prepare("UPDATE task_lists SET assigned_to = ? WHERE id = ?").run(
+          req.body.assigned_to,
+          row.id
+        );
+      }
+    });
+  } catch (err) {
+    // e.g. FK violation on assigned_to — the failed tx rolls back and
+    // NOTHING is updated. Catches propagate to a deterministic 500 (Express
+    // 4 does not handle async handler rejections on its own).
+    console.error("[switchboard] task update tx failed:", err.message);
+    return res.status(500).json({ error: "Task update failed" });
+  }
 
   const task = await db.prepare("SELECT * FROM task_lists WHERE id = ?").get(row.id);
   res.json({ task, scope: await scopeSummary(req.workspace.id) });

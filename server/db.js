@@ -53,14 +53,46 @@ function toPostgresSql(sql) {
   return sql.replace(/\?/g, () => `$${++i}`);
 }
 
-// ── Core async helpers ────────────────────────────────────────────────────
+// ── Core async helpers ─────────────────────────────────────────────────────
+//
+// Phase 0.3 (SQLite): although better-sqlite3 is synchronous, async route
+// handlers interleave between statements. A concurrent request's write could
+// otherwise land inside another request's OPEN transaction on the shared
+// connection. Every statement therefore executes through one promise chain;
+// an active transaction occupies the chain for its whole (async) duration so
+// other requests serialize BEHIND it instead of interleaving into it.
+let sqliteQueue = Promise.resolve();
+let sqliteTxDepth = 0;
+
+function sqliteDirect(kind, sql, params) {
+  const stmt = sqlite.prepare(sql);
+  if (kind === "all") return stmt.all(...params);
+  if (kind === "get") return stmt.get(...params);
+  return stmt.run(...params);
+}
+
+function sqliteExec(kind, sql, params) {
+  if (sqliteTxDepth > 0) return sqliteDirect(kind, sql, params); // inside our own tx
+  const p = sqliteQueue.then(
+    () => sqliteDirect(kind, sql, params),
+    () => sqliteDirect(kind, sql, params)
+  );
+  sqliteQueue = p.catch(() => {});
+  return p;
+}
+
+/** Normalize better-sqlite3 run info into the { lastID, changes } shape. */
+function sqliteInfo(info) {
+  return { lastID: info.lastInsertRowid, changes: info.changes };
+}
+
 export async function query(sql, params = []) {
   if (IS_POSTGRES) {
     const result = await pool.query(toPostgresSql(sql), params);
     result.rows.forEach(normalizeRow);
     return { rows: result.rows, rowCount: result.rowCount };
   }
-  const rows = sqlite.prepare(sql).all(...params);
+  const rows = await sqliteExec("all", sql, params);
   rows.forEach(normalizeRow);
   return { rows, rowCount: rows.length };
 }
@@ -74,11 +106,7 @@ export async function run(sql, params = []) {
     const result = await pool.query(toPostgresSql(sql), params);
     return { lastID: result.rows.length === 1 ? result.rows[0].id : null, changes: result.rowCount };
   }
-  const info = sqlite.prepare(sql).run(...params);
-  // Appendix: RETURNING style INSERTs expose the id in result.rows.
-  // Fall back to lastInsertRowid when the statement does not use RETURNING.
-  const lastID = info.lastInsertRowid;
-  return { lastID, changes: info.changes };
+  return sqliteInfo(await sqliteExec("run", sql, params));
 }
 
 // ── prepare()-shaped API so routes do `.get()/ .all()/ .run()` chains ─────
@@ -91,7 +119,7 @@ const adapter = {
           const { rows } = await pool.query(toPostgresSql(sql), params);
           return rows[0] ? normalizeRow(rows[0]) : null;
         }
-        return normalizeRow(sqlite.prepare(sql).get(...params) ?? null);
+        return normalizeRow((await sqliteExec("get", sql, params)) ?? null);
       },
       // async rows fetch (array)
       async all(...params) {
@@ -100,7 +128,7 @@ const adapter = {
           rows.forEach(normalizeRow);
           return rows;
         }
-        const rows = sqlite.prepare(sql).all(...params);
+        const rows = await sqliteExec("all", sql, params);
         rows.forEach(normalizeRow);
         return rows;
       },
@@ -111,30 +139,119 @@ const adapter = {
   },
 
   /**
-   * Transaction wrapper (single-instance beta: serial execution is safe).
-   * Postgres: BEGIN/COMMIT with rollback on error.
-   * SQLite: native better-sqlite3 transaction.
+   * Phase 0.3: REAL transactions on both dialects.
+   *
+   * Postgres: the callback receives a db-shaped object bound to the tx's own
+   * client. (Previously callbacks ran statements on the POOL — a different
+   * connection — so BEGIN/COMMIT wrapped nothing and a mid-tx failure left
+   * partial writes.)
+   *
+   * SQLite: true BEGIN/COMMIT/ROLLBACK on the connection, serialized through
+   * the statement queue so concurrent async requests cannot interleave
+   * inside the transaction; the callback also receives a bound db object.
    */
   async tx(fn) {
     if (IS_POSTGRES) {
       const client = await pool.connect();
       try {
         await client.query("BEGIN");
-        const result = await fn(client);
+        const result = await fn(makeTxDb(client));
         await client.query("COMMIT");
         return result;
       } catch (err) {
-        await client.query("ROLLBACK");
+        // A failed ROLLBACK must not mask the original error.
+        try {
+          await client.query("ROLLBACK");
+        } catch {
+          /* transaction already aborted */
+        }
         throw err;
       } finally {
         client.release();
       }
     }
-    // SQLite: run statements synchronously inside an implicit transaction.
-    // (Concurrency-free single process — no rollback needed in dev.)
-    return fn();
+    // SQLite
+    const exec = async () => {
+      sqlite.prepare("BEGIN").run();
+      sqliteTxDepth++;
+      try {
+        const result = await fn(makeTxDb(null));
+        sqlite.prepare("COMMIT").run();
+        return result;
+      } catch (err) {
+        try {
+          sqlite.prepare("ROLLBACK").run();
+        } catch {
+          /* transaction already aborted */
+        }
+        throw err;
+      } finally {
+        sqliteTxDepth--;
+      }
+    };
+    const p = sqliteQueue.then(exec, exec);
+    sqliteQueue = p.catch(() => {});
+    return p;
   },
 };
+
+/**
+ * db-shaped object confined to a transaction's executor, handed to db.tx()
+ * callbacks. Postgres statements run on the tx client (NOT the ambient
+ * pool); SQLite statements run directly on the connection — safe there
+ * because the tx owns the statement queue for its duration.
+ */
+function makeTxDb(client) {
+  const runOne = async (sql, params) => {
+    if (client) {
+      const result = await client.query(toPostgresSql(sql), params);
+      return { lastID: result.rows.length === 1 ? result.rows[0].id : null, changes: result.rowCount };
+    }
+    return sqliteInfo(sqlite.prepare(sql).run(...params));
+  };
+  return {
+    async query(sql, params = []) {
+      if (client) {
+        const result = await client.query(toPostgresSql(sql), params);
+        result.rows.forEach(normalizeRow);
+        return { rows: result.rows, rowCount: result.rowCount };
+      }
+      const rows = sqlite.prepare(sql).all(...params);
+      rows.forEach(normalizeRow);
+      return { rows, rowCount: rows.length };
+    },
+    run: runOne,
+    prepare(sql) {
+      return {
+        async get(...params) {
+          if (client) {
+            const { rows } = await client.query(toPostgresSql(sql), params);
+            return rows[0] ? normalizeRow(rows[0]) : null;
+          }
+          return normalizeRow(sqlite.prepare(sql).get(...params) ?? null);
+        },
+        async all(...params) {
+          if (client) {
+            const { rows } = await client.query(toPostgresSql(sql), params);
+            rows.forEach(normalizeRow);
+            return rows;
+          }
+          const rows = sqlite.prepare(sql).all(...params);
+          rows.forEach(normalizeRow);
+          return rows;
+        },
+        async run(...params) {
+          return runOne(sql, params);
+        },
+      };
+    },
+    // Nested transactions are not supported — a callback must use the tx db
+    // it was given, never call the ambient adapter's tx again.
+    async tx() {
+      throw new Error("Nested db.tx() calls are not supported");
+    },
+  };
+}
 
 export default adapter;
 

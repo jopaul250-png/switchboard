@@ -46,10 +46,13 @@ jobs:
 
     - name: Test suite (SQLite, fresh throwaway DB)
       run: npm test
+      env:
+        SMOKE_TARGET: sqlite
 
     - name: Test suite (Postgres service container)
       run: npm test
       env:
+        SMOKE_TARGET: postgres
         DATABASE_URL: postgres://switchboard:switchboard@localhost:5432/switchboard_test
 
     - name: Build Frontend

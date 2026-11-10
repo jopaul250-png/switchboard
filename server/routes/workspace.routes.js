@@ -44,15 +44,32 @@ router.post("/", planLimits, async (req, res) => {
     ? Math.max(0, Number(req.body.contract_hours))
     : 40;
 
-  const workspace = await db.tx(async (client) => {
-    const { lastID } = await db
-      .prepare(
-        "INSERT INTO client_workspaces (name, owner_id, plan_type, contract_hours) VALUES (?, ?, ?, ?) RETURNING id"
-      )
-      .run(name, req.user.id, plan, contractHours);
-    await seedPulseQueues(lastID, client);
-    return db.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(lastID);
-  });
+  // Test-only injection hook: a mid-transaction failure AFTER the INSERT.
+  // Requires ALL of: the server to run with SWITCHBOARD_ALLOW_TX_INJECTION=1,
+  // the request to carry the header, and a non-production NODE_ENV — the hook
+  // is UNREACHABLE in production regardless of env/header (tested by
+  // injection-guard.test.mjs).
+  const injectTxFailure =
+    process.env.NODE_ENV !== "production" &&
+    process.env.SWITCHBOARD_ALLOW_TX_INJECTION === "1" &&
+    req.get("x-switchboard-tx-fail") === "1";
+
+  let workspace;
+  try {
+    workspace = await db.tx(async (txDb) => {
+      const { lastID } = await txDb
+        .prepare(
+          "INSERT INTO client_workspaces (name, owner_id, plan_type, contract_hours) VALUES (?, ?, ?, ?) RETURNING id"
+        )
+        .run(name, req.user.id, plan, contractHours);
+      await seedPulseQueues(lastID, txDb);
+      if (injectTxFailure) throw new Error("Injected mid-transaction failure");
+      return txDb.prepare("SELECT * FROM client_workspaces WHERE id = ?").get(lastID);
+    });
+  } catch (err) {
+    console.error("[switchboard] workspace create tx failed:", err.message);
+    return res.status(500).json({ error: "Workspace creation failed" });
+  }
 
   res.status(201).json({ workspace });
 });

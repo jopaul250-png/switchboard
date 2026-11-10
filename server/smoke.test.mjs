@@ -8,8 +8,8 @@ const ok = (name, cond, extra = "") => {
   else { fail++; console.log(`  ✗ ${name} ${extra}`); }
 };
 
-const call = async (path, { method = "GET", body, token } = {}) => {
-  const headers = {};
+const call = async (path, { method = "GET", body, token, headers: extraHeaders = {} } = {}) => {
+  const headers = { ...extraHeaders };
   if (body) headers["Content-Type"] = "application/json";
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
@@ -119,6 +119,35 @@ const call = async (path, { method = "GET", body, token } = {}) => {
   }
   r = await call(`/workspaces/${wsC.id}/pulse/clear`, { method: "POST", token });
   ok("clear feed resets to 0", r.data.total_unread === 0 && r.data.feeds.every((f) => f.unread_count === 0));
+
+  console.log("— Transactions roll back on failure (Phase 0.3) —");
+  // Mid-transaction failure injected AFTER the workspace INSERT (test-only hook,
+  // requires the runner's SWITCHBOARD_ALLOW_TX_INJECTION=1 plus this header).
+  r = await call("/workspaces", {
+    method: "POST",
+    token,
+    body: { name: "TX-Injection Client", plan_type: "premium" }, // premium to pass the free-cap middleware
+    headers: { "x-switchboard-tx-fail": "1" },
+  });
+  ok("injected mid-tx failure → 500", r.status === 500, `got ${r.status}`);
+  {
+    const d = await call("/workspaces", { token });
+    ok("failed workspace-create tx leaves NO workspace row",
+      d.status === 200 && d.data.workspaces.length === 3 && !d.data.workspaces.some((w) => w.name === "TX-Injection Client"),
+      `got ${d.data.workspaces.length} workspaces`);
+  }
+  // FK violation mid-tx: the accepted status UPDATE must be rolled back.
+  r = await call(`/workspaces/${wsB.id}/tasks/${task.id}`, {
+    method: "PATCH",
+    token,
+    body: { status: "done", assigned_to: 999999999 },
+  });
+  ok("task PATCH with FK-violating assigned_to → 500", r.status === 500, `got ${r.status}`);
+  {
+    const d = await call(`/workspaces/${wsB.id}/tasks`, { token });
+    const t = d.data.tasks.find((x) => x.id === task.id);
+    ok("failed task PATCH rolled back (status unchanged)", d.status === 200 && t && t.status === "in_progress", `got ${t && t.status}`);
+  }
 
   console.log("— Tenant isolation —");
   r = await call(`/workspaces/${wsC.id}/sops`, { token }); // wsC has no SOPs; wsA's sop must not leak
