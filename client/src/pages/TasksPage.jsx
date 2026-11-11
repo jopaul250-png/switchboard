@@ -124,7 +124,7 @@ export default function TasksPage() {
             value={form.hours}
             onChange={(e) => setForm({ ...form, hours: e.target.value })}
             className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 pr-8 text-sm text-slate-100 outline-none focus:border-indigo-500"
-            title="Estimated hours (fed to the Scope Meter when done)"
+            title="Estimated hours (planning forecast only — never moves the Scope Meter)"
           />
           <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-500">
             h
@@ -210,7 +210,7 @@ export default function TasksPage() {
                           <button
                             onClick={() => move(t, +1)}
                             className="flex items-center gap-1 rounded-md bg-emerald-600/80 px-2 py-1 text-[10px] font-bold text-white hover:bg-emerald-500"
-                            title={`Done — adds ${t.estimated_hours}h to the meter`}
+                            title={`Done — the Scope Meter counts tracked time, not estimates`}
                           >
                             <Check className="h-3 w-3" />
                           </button>
@@ -240,7 +240,7 @@ export default function TasksPage() {
       {tasks.length === 0 && (
         <EmptyState
           title="Board is empty"
-          subtitle="Add tasks with estimated hours — completing them feeds the Scope Meter at the top."
+          subtitle="Add tasks with estimated hours — forecasts for planning only; the Scope Meter counts tracked time and manual adjustments."
         />
       )}
 
