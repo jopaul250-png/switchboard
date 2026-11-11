@@ -40,20 +40,34 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   r = await call("/auth/verify-password", { method: "POST", body: { password: pass1 } });
   ok("verify-password requires auth", r.status === 401);
 
-  console.log("— Plan limits (M3 free cap = 2) —");
+  console.log("— Plan limits (account-wide cap, default 10 — Phase 2.4) —");
   r = await call("/workspaces", { method: "POST", token, body: { name: "Client A" } });
   ok("create ws1", r.status === 201);
   const wsA = r.data.workspace;
   r = await call("/workspaces", { method: "POST", token, body: { name: "Client B", contract_hours: 10 } });
   ok("create ws2", r.status === 201 && r.data.workspace.contract_hours === 10);
   const wsB = r.data.workspace;
-  r = await call("/workspaces", { method: "POST", token, body: { name: "Client C" } });
-  ok("3rd workspace blocked 402", r.status === 402 && r.data.code === "WORKSPACE_LIMIT");
-  r = await call(`/workspaces/${wsA.id}`, { method: "PATCH", token, body: { plan_type: "premium" } });
-  ok("upgrade ws1 to premium", r.status === 200 && r.data.workspace.plan_type === "premium");
-  r = await call("/workspaces", { method: "POST", token, body: { name: "Client C" } });
-  ok("premium frees slot → create ws3", r.status === 201);
+  // Phase 2.4: client-sent plan_type is IGNORED on POST — stored as free
+  r = await call("/workspaces", { method: "POST", token, body: { name: "Client C", plan_type: "premium" } });
+  ok("create ws3 (client plan_type ignored → stored free)", r.status === 201 && r.data.workspace.plan_type === "free", `got ${r.status} plan=${r.data?.workspace?.plan_type}`);
   const wsC = r.data.workspace;
+  // Phase 2.4: plan_type is not client-settable on PATCH
+  r = await call(`/workspaces/${wsA.id}`, { method: "PATCH", token, body: { plan_type: "premium" } });
+  ok("PATCH plan_type → 400 (not client-settable)", r.status === 400, `got ${r.status}`);
+  // Fill to the account-wide cap (10 total), then the 11th is refused
+  const fillers = [];
+  for (let i = 4; i <= 10; i++) {
+    r = await call("/workspaces", { method: "POST", token, body: { name: `Filler ${i}` } });
+    ok(`filler workspace ${i} of 10 created`, r.status === 201, `got ${r.status}`);
+    if (r.status === 201) fillers.push(r.data.workspace);
+  }
+  r = await call("/workspaces", { method: "POST", token, body: { name: "One Too Many" } });
+  ok("11th workspace blocked 402", r.status === 402 && r.data.code === "WORKSPACE_LIMIT", `got ${r.status}`);
+  r = await call("/workspaces", { method: "POST", token, body: { name: "Premium Still Blocked", plan_type: "premium" } });
+  ok("11th attempt with plan_type:premium also blocked 402", r.status === 402 && r.data.code === "WORKSPACE_LIMIT", `got ${r.status}`);
+  for (const f of fillers) {
+    await call(`/workspaces/${f.id}`, { method: "DELETE", token });
+  }
   r = await call("/workspaces", { token });
   ok("list shows pulse_unread + counts", r.data.workspaces.length === 3 &&
       r.data.workspaces.every((w) => typeof w.pulse_unread === "number"));
@@ -129,7 +143,7 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   r = await call("/workspaces", {
     method: "POST",
     token,
-    body: { name: "TX-Injection Client", plan_type: "premium" }, // premium to pass the free-cap middleware
+    body: { name: "TX-Injection Client" }, // within the account-wide cap (fillers deleted above)
     headers: { "x-switchboard-tx-fail": "1" },
   });
   ok("injected mid-tx failure → 500", r.status === 500, `got ${r.status}`);

@@ -5,7 +5,7 @@ import { Button, Input, ConfirmModal, useToast } from "../components/ui.jsx";
 import { Crown, Trash } from "../components/icons.jsx";
 
 export default function SettingsPage() {
-  const { active, patchWorkspace, upgradeWorkspace, load } = useWorkspaces();
+  const { active, patchWorkspace, load } = useWorkspaces();
   const toast = useToast();
   // P2: manual adjustments are recorded separately (hours_manual); tracked
   // actuals come from time_logs and are read-only here.
@@ -73,34 +73,8 @@ export default function SettingsPage() {
     }
   };
 
-  const upgrade = async () => {
-    setError(null);
-    try {
-      await upgradeWorkspace(active.id);
-      setMsg("This client is now Premium 🎉");
-      toast.success(`${active.name} upgraded to Premium 🎉`);
-    } catch (err) {
-      setError(err.message);
-      toast.error(`Upgrade failed — ${err.message}`);
-    }
-  };
-
-  const downgrade = async () => {
-    setError(null);
-    try {
-      const d = await api(`/workspaces/${active.id}`, {
-        method: "PATCH",
-        body: { plan_type: "free" },
-      });
-      patchWorkspace(active.id, d.workspace);
-      setMsg("Downgraded to Free.");
-      toast.success(`${active.name} downgraded to Free`);
-    } catch (err) {
-      setError(err.message);
-      toast.error(`Downgrade failed — ${err.message}`);
-    }
-  };
-
+  // Phase 2.4: plan_type is not client-settable (no billing integration) —
+  // upgrade/downgrade controls are disabled until billing ships.
   const confirmDestroy = async () => {
     if (deleting) return;
     setDeleting(true);
@@ -176,20 +150,13 @@ export default function SettingsPage() {
           Plan — {active.plan_type}
         </h2>
         <p className="mt-2 text-sm text-slate-400">
-          {active.plan_type === "premium"
-            ? "Premium workspaces don't count against the free 2-workspace cap."
-            : "Free workspaces count toward your 2/2 cap. Upgrade to free up a slot."}
+          Each account is limited to 10 client workspaces. Premium upgrades are coming
+          soon — plan changes are disabled until billing ships.
         </p>
         <div className="mt-3 flex gap-2">
-          {active.plan_type === "free" ? (
-            <Button variant="success" onClick={upgrade}>
-              <Crown className="h-4 w-4" /> Upgrade to Premium
-            </Button>
-          ) : (
-            <Button variant="secondary" onClick={downgrade}>
-              Downgrade to Free
-            </Button>
-          )}
+          <Button variant="success" disabled title="Premium billing is not available yet">
+            <Crown className="h-4 w-4" /> Upgrade to Premium (coming soon)
+          </Button>
         </div>
       </div>
 

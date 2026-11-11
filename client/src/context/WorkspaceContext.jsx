@@ -48,14 +48,12 @@ export function WorkspaceProvider({ children }) {
     return d.workspace;
   };
 
-  const upgradeWorkspace = async (id) => {
-    await api(`/workspaces/${id}`, { method: "PATCH", body: { plan_type: "premium" } });
-    patchWorkspace(id, { plan_type: "premium" });
-  };
-
-  const freeUsed = workspaces.filter((w) => w.plan_type === "free").length;
-  const MAX_FREE = 2;
-  const atFreeLimit = freeUsed >= MAX_FREE;
+  // Phase 2.4: plan_type is not client-settable (no billing integration) —
+  // the upgrade flow is "coming soon" and the workspace cap is account-wide,
+  // mirroring the server default (env WORKSPACE_CAP, default 10).
+  const WORKSPACE_CAP = 10;
+  const used = workspaces.length;
+  const atCap = used >= WORKSPACE_CAP;
 
   return (
     <WorkspaceContext.Provider
@@ -68,10 +66,9 @@ export function WorkspaceProvider({ children }) {
         switchWorkspace,
         patchWorkspace,
         createWorkspace,
-        upgradeWorkspace,
-        freeUsed,
-        atFreeLimit,
-        maxFree: MAX_FREE,
+        used,
+        atCap,
+        workspaceCap: WORKSPACE_CAP,
         createOpen,
         setCreateOpen,
       }}

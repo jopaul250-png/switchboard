@@ -1,35 +1,30 @@
 import db from "../db.js";
 
-// Re-exported for callers that import the constant alongside the middleware
-// (workspace.routes.js uses it for the PATCH downgrade-bypass guard).
-export { MAX_FREE_WORKSPACES } from "./planLimitsMeta.js";
-import { MAX_FREE_WORKSPACES } from "./planLimitsMeta.js";
+// Re-exported for callers that import the constant alongside the middleware.
+export { WORKSPACE_CAP } from "./planLimitsMeta.js";
+import { WORKSPACE_CAP } from "./planLimitsMeta.js";
 
 /**
- * Free tier hard cap: a user may own at most 2 workspaces while their
- * slots are consumed by free workspaces. Upgrading a workspace to
- * 'premium' releases a free slot (Trello-style plan semantics).
+ * Phase 2.4: ONE account-wide cap. A user may own at most WORKSPACE_CAP
+ * workspaces, counted across ALL owned workspaces — plan_type is not
+ * client-settable and no longer affects the cap (there is no billing
+ * integration, so the old free/premium slot split is gone).
+ *
+ * Applies to POST /workspaces. Client-sent plan_type is ignored upstream:
+ * POST always creates 'free' and PATCH never touches plan_type.
  */
 export default async function planLimits(req, res, next) {
-  const newPlan = req.body?.plan_type === "premium" ? "premium" : "free";
-  if (newPlan === "premium") return next(); // premium creation unrestricted in v1
-
-  const { free: freeUsed } = await db
-    .prepare(
-      `SELECT COUNT(*) AS free
-       FROM client_workspaces WHERE owner_id = ? AND plan_type = 'free'`
-    )
+  const row = await db
+    .prepare("SELECT COUNT(*) AS used FROM client_workspaces WHERE owner_id = ?")
     .get(req.user.id);
-
-  const used = freeUsed ?? 0;
-  if (used >= MAX_FREE_WORKSPACES) {
+  const used = Number(row?.used ?? 0);
+  if (used >= WORKSPACE_CAP) {
     return res.status(402).json({
-      error: `Free plan is limited to ${MAX_FREE_WORKSPACES} workspaces (${used}/${MAX_FREE_WORKSPACES} used). Upgrade a workspace to premium to free up a slot.`,
+      error: `Your plan is limited to ${WORKSPACE_CAP} workspaces (${used}/${WORKSPACE_CAP} used).`,
       code: "WORKSPACE_LIMIT",
-      limit: MAX_FREE_WORKSPACES,
+      limit: WORKSPACE_CAP,
       used,
     });
   }
-
   next();
 }

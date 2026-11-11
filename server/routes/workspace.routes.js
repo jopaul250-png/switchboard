@@ -1,6 +1,6 @@
 import { Router } from "express";
 import db, { seedPulseQueues } from "../db.js";
-import planLimits, { MAX_FREE_WORKSPACES } from "../middleware/planLimits.js";
+import planLimits from "../middleware/planLimits.js";
 import workspaceScope from "../middleware/workspaceScope.js";
 import { scopeSummary } from "./task.routes.js";
 import { strField, numField } from "../lib/validate.js";
@@ -40,7 +40,9 @@ router.post("/", planLimits, async (req, res) => {
   if (!name) return res.status(400).json({ error: "Workspace name is required" });
   if (name.length > 60) return res.status(400).json({ error: "Name too long (max 60 chars)" });
 
-  const plan = req.body?.plan_type === "premium" ? "premium" : "free";
+  // Phase 2.4: plan_type is never client-settable — new workspaces are
+  // always created free, whatever the request body claims.
+  const plan = "free";
   // Phase 1.4: explicit 0–10000 bounds (previously silently defaulted on garbage)
   const contractHoursV = numField(req.body?.contract_hours, {
     name: "contract_hours", min: 0, max: 10000, fallback: 40,
@@ -107,10 +109,6 @@ router.patch("/:workspaceId", workspaceScope, async (req, res) => {
     if (nameV.error) errors.push(nameV.error);
     else updates.name = nameV.value;
   }
-  if ("plan_type" in req.body) {
-    if (!["free", "premium"].includes(req.body.plan_type)) errors.push("Invalid plan_type");
-    else updates.plan_type = req.body.plan_type;
-  }
   if ("contract_hours" in req.body) {
     // Phase 1.4: 0–10000 bounds
     const v = numField(req.body.contract_hours, { name: "contract_hours", min: 0, max: 10000 });
@@ -132,20 +130,8 @@ router.patch("/:workspaceId", workspaceScope, async (req, res) => {
   if (errors.length) return res.status(400).json({ error: errors.join("; ") });
   if (!Object.keys(updates).length) return res.status(400).json({ error: "Nothing to update" });
 
-  // Beta-hardening fix: prevent premium→free downgrade when the 2-free-slot
-  // budget is already exhausted (mirrors planLimits on creation).
-  if (updates.plan_type === "free" && w.plan_type === "premium") {
-    const { free: freeUsed } = await db
-      .prepare("SELECT COUNT(*) AS free FROM client_workspaces WHERE owner_id = ? AND plan_type = 'free'")
-      .get(w.owner_id);
-    if (freeUsed >= MAX_FREE_WORKSPACES) {
-      return res.status(402).json({
-        error: `Cannot downgrade: Free plan is limited to ${MAX_FREE_WORKSPACES} workspaces (${freeUsed}/${MAX_FREE_WORKSPACES} used).`,
-        code: "WORKSPACE_LIMIT",
-        limit: MAX_FREE_WORKSPACES,
-      });
-    }
-  }
+  // Phase 2.4: the premium→free downgrade guard is gone with the rest of the
+  // plan_type PATCH handling — plan is no longer client-settable at all.
 
   const setSql = Object.keys(updates).map((k) => `${k} = ?`).join(", ");
   await db

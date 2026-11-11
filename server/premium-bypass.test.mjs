@@ -1,31 +1,18 @@
-// Phase 1.5 — PREMIUM BYPASS: VULNERABILITY REPRODUCTION (documentation only).
+// Phase 2.4 — PREMIUM BYPASS FIX: REGRESSION TEST (inverted from Phase 1.5).
 //
-// NO FIX IS SHIPPED IN THIS PHASE. This file exists to prove, with a passing
-// test, that the M3 free-tier cap is bypassable end-to-end today:
+// The Phase 1.5 version of this file PROVED the bypass end-to-end (every
+// [VULNERABLE] assertion PASSED against the then-current server). Per the
+// owner decision implemented in Phase 2.4:
 //
-//   Vector A (creation-time):  POST /workspaces with plan_type:"premium"
-//     → planLimits() explicitly skips the cap for premium creations
-//       (middleware/planLimits.js: "premium creation unrestricted in v1"),
-//       and NOTHING verifies any payment.
-//   Vector B (flip-time):      PATCH /workspaces/:id { plan_type:"premium" }
-//     → any authenticated owner can flip their workspace to premium for free,
-//       which releases free slots (Trello semantics) and enables unlimited
-//       workspace creation.
+//   1. The server IGNORES client-sent plan_type on POST and PATCH entirely.
+//   2. ONE account-wide workspace cap (env WORKSPACE_CAP, default 10),
+//      counting ALL owned workspaces — no free/premium slot split.
+//   3. Existing plan_type values are never rewritten by client requests.
 //
-// Root cause: plan_type is CLIENT-AUTHORITATIVE. There is no billing
-// integration, so "premium" is just a string the client may send at will.
-//
-// OWNER-DECIDED TARGET DESIGN (Phase 2+, NOT this phase):
-//   1. Server IGNORES client-sent plan_type on POST/PATCH entirely.
-//   2. ONE configurable workspace cap per account (env-driven, default 10).
-//   3. The client Upgrade button becomes "coming soon" (no server contract).
-//
-// WHEN THE FIX LANDS, INVERT every assertion marked [VULNERABLE] below:
-//   - POST with plan_type:"premium" must be created as FREE (cap applies) or 400.
-//   - PATCH plan_type:"premium" must be refused (400/403) — plan is not
-//     client-settable without billing.
-//   - Creation beyond the configured cap must 402 regardless of any plan_type.
-// The [CAP-INTACT] assertion below stays valid after the fix unchanged.
+// The assertions below expect REFUSAL or IGNORE. Run against the pre-2.4
+// server they FAIL — that failing run is the fail-before evidence.
+// The [CAP-INTACT] section stays (updated from free-cap-2 to account-wide
+// cap-10 semantics): 10 workspaces are created, the 11th is refused.
 
 const BASE = process.env.SMOKE_API_BASE || "http://localhost:3001/api";
 let pass = 0, fail = 0;
@@ -51,47 +38,48 @@ const call = async (path, { method = "GET", body, token } = {}) => {
   let r = await call("/auth/register", { method: "POST", body: { email, password } });
   ok("setup: user registered", r.status === 201 && r.data.token, `got ${r.status}`);
   const token = r.data.token;
+  const created = [];
 
-  console.log("— [CAP-INTACT] the free cap itself works —");
-  r = await call("/workspaces", { method: "POST", token, body: { name: "Free 1" } });
-  ok("free workspace 1 → 201", r.status === 201, `got ${r.status}`);
-  const ws1 = r.data.workspace;
-  r = await call("/workspaces", { method: "POST", token, body: { name: "Free 2" } });
-  ok("free workspace 2 → 201", r.status === 201, `got ${r.status}`);
-  const ws2 = r.data.workspace;
-  r = await call("/workspaces", { method: "POST", token, body: { name: "Free 3" } });
-  ok("free workspace 3 → 402 (cap enforced)", r.status === 402 && r.data.code === "WORKSPACE_LIMIT", `got ${r.status}`);
-
-  console.log("— [VULNERABLE] Vector A: creation-time premium bypass —");
+  console.log("— [FIXED] Vector A: creation-time plan_type is ignored —");
   r = await call("/workspaces", {
     method: "POST",
     token,
-    body: { name: "Self-Served Premium", plan_type: "premium" }, // NO payment anywhere
+    body: { name: "Sneaky Premium", plan_type: "premium" }, // NO payment anywhere
   });
-  ok("VULNERABLE: POST plan_type:premium skips the cap → 201", r.status === 201, `got ${r.status}`);
-  const ws3 = r.data.workspace;
-  ok("VULNERABLE: workspace stored as premium with zero billing", r.status === 201 && r.data.workspace?.plan_type === "premium", `got ${r.data?.workspace?.plan_type}`);
+  ok("POST with plan_type:premium still creates (within cap) → 201", r.status === 201, `got ${r.status}`);
+  ok("workspace stored as FREE — server ignored client plan_type", r.data.workspace?.plan_type === "free", `got ${r.data?.workspace?.plan_type}`);
+  if (r.status === 201) created.push(r.data.workspace);
+  const sneaky = r.data.workspace;
 
-  console.log("— [VULNERABLE] Vector B: client-authoritative plan flip —");
-  r = await call(`/workspaces/${ws1.id}`, { method: "PATCH", token, body: { plan_type: "premium" } });
-  ok("VULNERABLE: PATCH flips free→premium with no payment → 200", r.status === 200 && r.data.workspace?.plan_type === "premium", `got ${r.status}`);
+  console.log("— [FIXED] Vector B: PATCH plan_type is not client-settable —");
+  r = await call(`/workspaces/${sneaky?.id}`, { method: "PATCH", token, body: { plan_type: "premium" } });
+  ok("PATCH plan_type alone → 400 (no patchable field)", r.status === 400, `got ${r.status}`);
+  r = await call(`/workspaces/${sneaky?.id}`, { token });
+  ok("plan_type unchanged after refused PATCH — no rewrite", r.data.workspace?.plan_type === "free", `got ${r.data?.workspace?.plan_type}`);
+  r = await call(`/workspaces/${sneaky?.id}`, {
+    method: "PATCH",
+    token,
+    body: { plan_type: "premium", name: "Renamed Sneaky" },
+  });
+  ok("PATCH mixing plan_type with a real change → 200", r.status === 200, `got ${r.status}`);
+  ok("plan_type STILL free — silently ignored, never applied", r.data.workspace?.plan_type === "free", `got ${r.data?.workspace?.plan_type}`);
 
-  console.log("— [VULNERABLE] compounding: released slots enable unlimited creation —");
-  const created = [ws1, ws2, ws3];
-  for (let i = 4; i <= 8; i++) {
-    // keep flipping the oldest free workspace to premium so slots keep opening
-    const stillFree = created.find((w) => w.plan_type !== "premium");
-    if (stillFree) {
-      await call(`/workspaces/${stillFree.id}`, { method: "PATCH", token, body: { plan_type: "premium" } });
-      stillFree.plan_type = "premium";
-    }
-    r = await call("/workspaces", { method: "POST", token, body: { name: `Overflow ${i}` } });
-    ok(`VULNERABLE: overflow workspace ${i} → 201 (beyond free cap)`, r.status === 201, `got ${r.status}`);
+  console.log("— [CAP-INTACT] account-wide cap (default 10) counts ALL workspaces —");
+  for (let i = 2; i <= 10; i++) {
+    r = await call("/workspaces", { method: "POST", token, body: { name: `Client ${i}` } });
+    ok(`workspace ${i} of 10 → 201`, r.status === 201, `got ${r.status}`);
     if (r.status === 201) created.push(r.data.workspace);
   }
-
+  r = await call("/workspaces", { method: "POST", token, body: { name: "One Too Many" } });
+  ok("11th workspace → 402 WORKSPACE_LIMIT", r.status === 402 && r.data.code === "WORKSPACE_LIMIT", `got ${r.status}`);
+  r = await call("/workspaces", {
+    method: "POST",
+    token,
+    body: { name: "Premium Still Blocked", plan_type: "premium" },
+  });
+  ok("11th attempt with plan_type:premium → still 402 (plan_type cannot bypass)", r.status === 402 && r.data.code === "WORKSPACE_LIMIT", `got ${r.status}`);
   r = await call("/workspaces", { token });
-  ok("VULNERABLE: account now owns 8 workspaces on a never-paid plan", r.status === 200 && r.data.workspaces.length === 8, `got ${r.data?.workspaces?.length}`);
+  ok("account owns exactly 10 workspaces at the cap", r.status === 200 && r.data.workspaces.length === 10, `got ${r.data?.workspaces?.length}`);
 
   console.log("— Cleanup —");
   for (const w of created) {
@@ -100,8 +88,5 @@ const call = async (path, { method = "GET", body, token } = {}) => {
   }
 
   console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
-  console.log("NOTE: this suite PASSES while the vulnerability exists. After the");
-  console.log("Phase 2 fix (server ignores client plan_type + single cap), invert");
-  console.log("every [VULNERABLE] assertion — they must then expect refusals.");
   process.exit(fail ? 1 : 0);
 })();

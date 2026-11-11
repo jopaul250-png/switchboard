@@ -16,8 +16,8 @@ export default function SidebarHero() {
     active,
     activeId,
     switchWorkspace,
-    freeUsed,
-    maxFree,
+    used,
+    workspaceCap,
     setCreateOpen,
   } = useWorkspaces();
   const { user, logout } = useAuth();
@@ -80,32 +80,33 @@ export default function SidebarHero() {
         </button>
       </div>
 
-      {/* Free-tier tracker + upgrade CTA */}
+      {/* Workspace tracker + upgrade CTA (Phase 2.4: coming soon) */}
       <div className="m-3 rounded-2xl border border-slate-800 bg-slate-850 bg-slate-800/40 p-4">
         <div className="flex items-center justify-between">
           <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
             Free Plan
           </span>
           <span
-            className={`text-xs font-bold ${freeUsed >= maxFree ? "text-rose-400" : "text-emerald-400"}`}
+            className={`text-xs font-bold ${used >= workspaceCap ? "text-rose-400" : "text-emerald-400"}`}
           >
-            Workspaces Used: {freeUsed}/{maxFree}
+            Workspaces Used: {used}/{workspaceCap}
           </span>
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-900">
           <div
-            className={`h-full rounded-full transition-all duration-500 ${freeUsed >= maxFree ? "bg-rose-500" : "bg-indigo-500"}`}
-            style={{ width: `${Math.min(100, (freeUsed / maxFree) * 100)}%` }}
+            className={`h-full rounded-full transition-all duration-500 ${used >= workspaceCap ? "bg-rose-500" : "bg-indigo-500"}`}
+            style={{ width: `${Math.min(100, (used / workspaceCap) * 100)}%` }}
           />
         </div>
         <button
-          onClick={() => setCreateOpen(true)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-2 text-xs font-bold text-slate-950 shadow-lg shadow-amber-950/40 transition-transform hover:scale-[1.02]"
+          disabled
+          title="Premium billing is not available yet"
+          className="mt-3 flex w-full cursor-not-allowed items-center justify-center gap-1.5 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 px-3 py-2 text-xs font-bold text-slate-950 opacity-60"
         >
-          <Crown className="h-3.5 w-3.5" /> Upgrade Plan
+          <Crown className="h-3.5 w-3.5" /> Upgrade Plan (coming soon)
         </button>
         <p className="mt-2 text-center text-[10px] leading-snug text-slate-600">
-          Free = 2 client workspaces. Premium unlocks additional clients.
+          {workspaceCap} client workspaces per account. Premium upgrades coming soon.
         </p>
       </div>
 
