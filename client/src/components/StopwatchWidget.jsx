@@ -10,6 +10,13 @@ import {
   pauseTimer,
   resumeTimer,
   elapsedSeconds,
+  beatTimer,
+  hasLongGap,
+  gapSeconds,
+  elapsedUntilLastActive,
+  creditGap,
+  applyDuration,
+  HEARTBEAT_MS,
 } from "../lib/timer.js";
 
 const fmt = (s) =>
@@ -26,14 +33,16 @@ const fmt = (s) =>
  * - Attribution is pinned to the workspace the session STARTED in —
  *   switching clients mid-session pauses the clock and keeps billing honest.
  *
- * Phase 2.2 — the session survives refresh and tab closure:
- * - the START TIMESTAMP (not a ticking counter) is persisted per workspace
- *   in localStorage (one slot = one active timer);
- * - elapsed is always COMPUTED from Date.now() (no drift, no lost counter);
- * - on load a persisted session offers RESUME or DISCARD;
- * - a session that was RUNNING when the tab closed keeps accruing wall time
- *   (trust-based model) — the prompt shows the true elapsed so resuming is
- *   an informed choice, and Discard drops the whole session.
+ * Phase 2.2 — the session survives refresh and tab closure: the START
+ * TIMESTAMP (not a ticking counter) is persisted per workspace (one slot =
+ * one active timer), elapsed is always computed from Date.now(), and a
+ * persisted session offers RESUME or DISCARD on load.
+ *
+ * Phase 2.6 — trust rule for closed tabs: a 30s heartbeat keeps `lastActive`
+ * fresh while the page is open. A running session whose heartbeat is older
+ * than 90s (closed tab, slept laptop) is NEVER silently credited — on load,
+ * or when the tab becomes visible again, the widget shows the gap and offers
+ * Log-until-last-active / Resume-crediting / Edit-duration / Discard.
  */
 export default function StopwatchWidget() {
   const { active, patchWorkspace } = useWorkspaces();
@@ -42,6 +51,9 @@ export default function StopwatchWidget() {
   const [elapsed, setElapsed] = useState(0);
   const [session, setSession] = useState(null); // persisted shape — see lib/timer.js
   const [prompt, setPrompt] = useState(false); // resume-or-discard pending
+  const [gapFound, setGapFound] = useState(false); // long-gap prompt variant (2.6)
+  const [editingGap, setEditingGap] = useState(false); // duration input open (2.6)
+  const [gapMinutes, setGapMinutes] = useState("");
   const [savedMsg, setSavedMsg] = useState(null);
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -51,33 +63,81 @@ export default function StopwatchWidget() {
 
   useEffect(() => () => clearTimeout(savedTimer.current), []);
 
-  /* Phase 2.2: on load, offer to resume or discard a persisted session. */
+  /* Phase 2.2/2.6: on load, offer to resume or discard a persisted session;
+     a long gap since the last heartbeat upgrades the prompt (never credited
+     silently). */
   useEffect(() => {
     const found = loadTimer(window.localStorage);
     if (!found) return;
+    const longGap = hasLongGap(found, Date.now());
     setSession(found);
     setDesc(found.desc || "");
-    setElapsed(elapsedSeconds(found));
+    setGapFound(longGap);
+    setElapsed(longGap ? elapsedUntilLastActive(found) : elapsedSeconds(found));
     setPrompt(true);
   }, []);
 
-  /* Ticking display — recomputed from Date.now() each second (never +1). */
+  /* Ticking display — recomputed from Date.now() each second (never +1).
+     During a long-gap prompt the display holds at until-last-active so the
+     closed-tab time is never shown as counted. */
   useEffect(() => {
     if (!session || !running) return;
-    const id = setInterval(() => setElapsed(elapsedSeconds(session)), 1000);
+    const id = setInterval(() => {
+      setElapsed(prompt && gapFound ? elapsedUntilLastActive(session) : elapsedSeconds(session));
+    }, 1000);
     return () => clearInterval(id);
-  }, [session, running]);
+  }, [session, running, prompt, gapFound]);
+
+  /* Phase 2.6 heartbeat: keep lastActive fresh while the page is open and
+     the clock runs (also beats when the tab hides). Storage-only: reads the
+     persisted truth so it can never clobber a state change. */
+  useEffect(() => {
+    if (!session || !running || prompt) return;
+    const beat = () => {
+      const cur = loadTimer(window.localStorage);
+      if (cur && cur.running) saveTimer(window.localStorage, beatTimer(cur, Date.now()));
+    };
+    beat();
+    const id = setInterval(beat, HEARTBEAT_MS);
+    const onHide = () => {
+      if (document.visibilityState === "hidden") beat();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", beat);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", beat);
+    };
+  }, [session, running, prompt]);
+
+  /* Phase 2.6: returning to a tab that was hidden a long while (slept
+     laptop) — re-check the gap and ask, never silently credit it. */
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!session || !running || prompt) return;
+      if (hasLongGap(session, Date.now())) {
+        setGapFound(true);
+        setPrompt(true);
+        setElapsed(elapsedUntilLastActive(session));
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [session, running, prompt]);
 
   /* P3: switching client workspaces auto-pauses the running clock. Elapsed
      time and attribution stay pinned to the workspace the session STARTED
-     in; the pause is persisted so it survives refresh. */
+     in; the pause is persisted so it survives refresh. Skipped while a
+     prompt is open — the user may be mid-decision on a gap. */
   useEffect(() => {
-    if (!session || !running || session.wsId === active?.id) return;
+    if (!session || !running || prompt || session.wsId === active?.id) return;
     const paused = pauseTimer(session);
     saveTimer(window.localStorage, paused);
     setSession(paused);
     setElapsed(paused.accumulated);
-  }, [active?.id, session, running]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active?.id, session, running, prompt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!active) return null;
 
@@ -95,7 +155,8 @@ export default function StopwatchWidget() {
   };
 
   /* Prompt actions — resume banks any wall time since the save (for a
-     session that was running) and continues; discard drops everything. */
+     session that was running within the heartbeat window) and continues;
+     discard drops everything. */
   const resumePersisted = () => {
     const now = Date.now();
     const banked = session.running ? pauseTimer(session, now) : session;
@@ -104,6 +165,7 @@ export default function StopwatchWidget() {
     setElapsed(elapsedSeconds(next, now));
     saveTimer(window.localStorage, next);
     setPrompt(false);
+    setGapFound(false);
   };
 
   const discardPersisted = () => {
@@ -112,18 +174,12 @@ export default function StopwatchWidget() {
     setElapsed(0);
     setDesc("");
     setPrompt(false);
+    setGapFound(false);
+    setEditingGap(false);
   };
 
-  const stopAndSave = async () => {
-    if (!session || busy || prompt) return;
-    const seconds = Math.round(elapsedSeconds(session));
-    if (seconds < 5) {
-      setError("Session too short to log (min 5s) — discarded.");
-      discardTimer(window.localStorage);
-      setElapsed(0);
-      setSession(null);
-      return;
-    }
+  /* Shared POST for Stop&Log and log-until-last-active. */
+  const saveLog = async (seconds) => {
     setBusy(true);
     setError(null);
     try {
@@ -148,6 +204,9 @@ export default function StopwatchWidget() {
       setElapsed(0);
       setSession(null);
       setDesc("");
+      setPrompt(false);
+      setGapFound(false);
+      setEditingGap(false);
     } catch (err) {
       setError(err.message);
       toast.error(`Could not save the session — ${err.message}`);
@@ -155,6 +214,56 @@ export default function StopwatchWidget() {
     } finally {
       setBusy(false);
     }
+  };
+
+  const stopAndSave = async () => {
+    if (!session || busy || prompt) return;
+    const seconds = Math.round(elapsedSeconds(session));
+    if (seconds < 5) {
+      setError("Session too short to log (min 5s) — discarded.");
+      discardTimer(window.localStorage);
+      setElapsed(0);
+      setSession(null);
+      return;
+    }
+    await saveLog(seconds);
+  };
+
+  /* Phase 2.6 gap choices — the closed-tab time counts ONLY when chosen. */
+  const logUntilLastActive = async () => {
+    const seconds = Math.round(elapsedUntilLastActive(session));
+    if (seconds < 5) {
+      discardPersisted();
+      setError("Session too short to log (min 5s) — discarded.");
+      return;
+    }
+    await saveLog(seconds); // gap excluded by construction
+  };
+
+  const resumeWithGap = () => {
+    const now = Date.now();
+    const next = creditGap(session, now);
+    setSession(next);
+    setElapsed(elapsedSeconds(next, now));
+    saveTimer(window.localStorage, next);
+    setPrompt(false);
+    setGapFound(false);
+  };
+
+  const applyEditedGap = () => {
+    const minutes = Number(gapMinutes);
+    if (!Number.isFinite(minutes) || minutes < 0) {
+      setError("Enter a duration in minutes (0 or more).");
+      return;
+    }
+    const now = Date.now();
+    const next = applyDuration(session, Math.round(minutes * 60), now);
+    setSession(next);
+    setElapsed(elapsedSeconds(next, now));
+    saveTimer(window.localStorage, next);
+    setEditingGap(false);
+    setPrompt(false);
+    setGapFound(false);
   };
 
   const away = session && session.wsId !== active?.id;
@@ -202,14 +311,92 @@ export default function StopwatchWidget() {
       {/* ticking clock */}
       <div
         className={`mt-3 text-center font-mono text-3xl font-bold tabular-nums tracking-wider ${
-          running ? "text-emerald-300" : session ? "text-amber-300" : "text-slate-400"
+          running && !(prompt && gapFound)
+            ? "text-emerald-300"
+            : session
+              ? "text-amber-300"
+              : "text-slate-400"
         }`}
       >
         {fmt(elapsed)}
       </div>
 
-      {/* resume-or-discard prompt (persisted session found on load) */}
-      {prompt && session && (
+      {/* long-gap prompt (Phase 2.6): closed-tab time needs an explicit choice */}
+      {prompt && session && gapFound && (
+        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-amber-300">
+            Away {Math.floor(gapSeconds(session, Date.now()) / 60)} min — not counted yet
+          </p>
+          <p className="mt-1 text-[11px] leading-relaxed text-amber-200/70">
+            The tab was closed that long. Time away is never credited unless you choose it.
+          </p>
+          {editingGap ? (
+            <div className="mt-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={gapMinutes}
+                  onChange={(e) => setGapMinutes(e.target.value)}
+                  className="w-20 rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-500"
+                />
+                <span className="text-[11px] text-slate-400">minutes to keep, then keep working</span>
+              </div>
+              <div className="mt-2 flex gap-2">
+                <button
+                  onClick={applyEditedGap}
+                  disabled={busy}
+                  className="flex-1 rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  Apply &amp; Resume
+                </button>
+                <button
+                  onClick={() => setEditingGap(false)}
+                  disabled={busy}
+                  className="flex-1 rounded-md bg-slate-800 px-2 py-1.5 text-[11px] font-bold text-slate-300 transition-colors hover:bg-slate-700 disabled:opacity-50"
+                >
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                onClick={logUntilLastActive}
+                disabled={busy}
+                className="rounded-md bg-emerald-600 px-2 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+              >
+                Log until last active
+              </button>
+              <button
+                onClick={resumeWithGap}
+                disabled={busy}
+                className="rounded-md bg-indigo-600 px-2 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+              >
+                Resume — credit gap
+              </button>
+              <button
+                onClick={() => setEditingGap(true)}
+                disabled={busy}
+                className="rounded-md bg-slate-800 px-2 py-1.5 text-[11px] font-bold text-slate-300 transition-colors hover:bg-slate-700 disabled:opacity-50"
+              >
+                Edit duration
+              </button>
+              <button
+                onClick={discardPersisted}
+                disabled={busy}
+                className="rounded-md bg-slate-800 px-2 py-1.5 text-[11px] font-bold text-rose-300 transition-colors hover:bg-rose-600 hover:text-white disabled:opacity-50"
+              >
+                Discard
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* resume-or-discard prompt (persisted session within the heartbeat window) */}
+      {prompt && session && !gapFound && (
         <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3">
           <p className="text-[11px] font-bold uppercase tracking-wide text-amber-300">
             Unsaved session found
