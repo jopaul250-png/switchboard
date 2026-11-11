@@ -5,13 +5,14 @@ import { useWorkspaces } from "../context/WorkspaceContext.jsx";
 import { Badge, Button, Input, EmptyState, ConfirmModal, useToast } from "../components/ui.jsx";
 import { Search, Plus, Doc, Trash, ArrowLeft } from "../components/icons.jsx";
 import { hasChanges, beforeUnloadGuard } from "../lib/dirtyGuard.js";
+import { planWorkspaceSwitch } from "../lib/switchGuard.js";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 const CATEGORIES = ["general", "brand-guidelines", "formatting-rules", "voice-tone", "palette"];
 
 export default function SopsPage() {
-  const { active } = useWorkspaces();
+  const { active, switchWorkspace } = useWorkspaces();
   const toast = useToast();
   const [sops, setSops] = useState([]);
   const [query, setQuery] = useState("");
@@ -27,13 +28,36 @@ export default function SopsPage() {
   const baselineRef = useRef(null); // draft snapshot taken when the editor opened
   const dirtyRef = useRef(false);
   const [leaveTarget, setLeaveTarget] = useState(null); // null | "route" | "back"
+  // Phase 2.5: active-workspace switch guard (same confirm dialog as 2.3)
+  const prevWsRef = useRef(active?.id);
+  const revertingRef = useRef(false); // true while restoring the previous workspace
+  const [pendingSwitch, setPendingSwitch] = useState(null); // { from, to } | null
 
+  /* Phase 2.5: every active-workspace switch goes through planWorkspaceSwitch.
+     A dirty draft is never silently discarded: the editor holds, the confirm
+     dialog asks, and "keep editing" restores the previous workspace. */
   useEffect(() => {
-    if (!active) return;
+    const from = prevWsRef.current;
+    const to = active?.id;
+    prevWsRef.current = to;
+    const plan = planWorkspaceSwitch({
+      editing: Boolean(editing),
+      dirty: dirtyRef.current,
+      reverting: revertingRef.current,
+      from,
+      to,
+    });
+    if (revertingRef.current) revertingRef.current = false;
+    if (plan.action === "noop" || plan.action === "restore") return;
+    if (plan.action === "confirm") {
+      setPendingSwitch({ from, to });
+      return;
+    }
+    // "reset" — original behavior
     setEditing(null);
     setQuery("");
     setCategoryFilter("all");
-    api(`/workspaces/${active.id}/sops`)
+    api(`/workspaces/${to}/sops`)
       .then((d) => setSops(d.sops))
       .catch(() => {});
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -139,6 +163,27 @@ export default function SopsPage() {
     if (blocker.state === "blocked") blocker.reset();
   };
 
+  /* Phase 2.5: switch dialog — discard clears the draft and loads the new
+     client; cancel restores the previous client and keeps editing. */
+  const confirmSwitch = () => {
+    const target = pendingSwitch?.to;
+    setPendingSwitch(null);
+    setEditing(null);
+    setQuery("");
+    setCategoryFilter("all");
+    if (target) {
+      api(`/workspaces/${target}/sops`)
+        .then((d) => setSops(d.sops))
+        .catch(() => {});
+    }
+  };
+  const cancelSwitch = () => {
+    const target = pendingSwitch;
+    setPendingSwitch(null);
+    revertingRef.current = true;
+    if (target) switchWorkspace(target.from);
+  };
+
   if (editing) {
     /* ================= Split-pane editor ================= */
     return (
@@ -153,7 +198,7 @@ export default function SopsPage() {
             <ArrowLeft className="h-3.5 w-3.5" /> Back to vault
           </Button>
           <div className="flex-1" />
-          <Button onClick={save} disabled={busy} title="Save (requires a title)">
+          <Button onClick={save} disabled={busy || Boolean(pendingSwitch)} title="Save (requires a title)">
             Save
           </Button>
         </div>
@@ -201,6 +246,19 @@ export default function SopsPage() {
             title="Leave with unsaved changes?"
             message="This draft has changes that were not saved yet. Leaving now will discard them."
             confirmLabel="Discard Changes"
+          />
+        )}
+
+        {/* Phase 2.5: active-workspace switch confirmation (same guard) */}
+        {pendingSwitch && (
+          <ConfirmModal
+            open
+            onClose={cancelSwitch}
+            onConfirm={confirmSwitch}
+            tone="warning"
+            title="Switch client with unsaved changes?"
+            message="This draft has changes that were not saved yet. Switching clients now will discard them — or cancel to stay on this client and keep editing."
+            confirmLabel="Discard & Switch"
           />
         )}
       </div>
