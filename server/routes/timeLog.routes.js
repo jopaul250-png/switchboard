@@ -1,6 +1,7 @@
 import { Router } from "express";
 import db from "../db.js";
 import { scopeSummary } from "./task.routes.js";
+import { strField, dateField } from "../lib/validate.js";
 
 const router = Router();
 
@@ -30,7 +31,13 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "Max 24h per logged session" });
   }
   const description = String(req.body?.task_description || "").trim() || "Tracked session";
-  const startedAt = String(req.body?.started_at || new Date().toISOString());
+  // Phase 1.4: description cap + started_at must be ISO-parseable
+  const descriptionV = strField(description, { name: "task_description", max: 500, required: true });
+  if (descriptionV.error) return res.status(400).json({ error: descriptionV.error });
+
+  const startedAtV = dateField(req.body?.started_at, { name: "started_at" });
+  if (startedAtV.error) return res.status(400).json({ error: startedAtV.error });
+  const startedAt = startedAtV.value ?? new Date().toISOString();
 
   const { lastID } = await db
     .prepare(

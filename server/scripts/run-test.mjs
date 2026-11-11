@@ -178,6 +178,9 @@ async function runFiles(port, files, childEnv) {
       const prodEnv = {
         ...env,
         NODE_ENV: "production",
+        // Phase 1.4: production boots REFUSE to start without an explicit
+        // origin allowlist — the runner must declare one like a real deploy.
+        CORS_ORIGIN: "http://localhost:5173",
         ...(isPostgres ? {} : { SQLITE_PATH: prodFile }),
       };
       console.log("\n# production-mode injection guard (local server, NODE_ENV=production)");

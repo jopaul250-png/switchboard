@@ -139,17 +139,20 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
       d.status === 200 && d.data.workspaces.length === 3 && !d.data.workspaces.some((w) => w.name === "TX-Injection Client"),
       `got ${d.data.workspaces.length} workspaces`);
   }
-  // FK violation mid-tx: the accepted status UPDATE must be rolled back.
+  // Phase 1.4: assigned_to is pre-validated against users(id) BEFORE the
+  // transaction. A nonexistent user is now a clean 400 instead of a
+  // mid-transaction FK violation (was: 500 + rollback). Status must be
+  // untouched either way.
   r = await call(`/workspaces/${wsB.id}/tasks/${task.id}`, {
     method: "PATCH",
     token,
     body: { status: "done", assigned_to: 999999999 },
   });
-  ok("task PATCH with FK-violating assigned_to → 500", r.status === 500, `got ${r.status}`);
+  ok("task PATCH with nonexistent assigned_to → 400 (Phase 1.4)", r.status === 400, `got ${r.status} err=${r.data?.error}`);
   {
     const d = await call(`/workspaces/${wsB.id}/tasks`, { token });
     const t = d.data.tasks.find((x) => x.id === task.id);
-    ok("failed task PATCH rolled back (status unchanged)", d.status === 200 && t && t.status === "in_progress", `got ${t && t.status}`);
+    ok("rejected assigned_to leaves status untouched", d.status === 200 && t && t.status === "in_progress", `got ${t && t.status}`);
   }
 
   console.log("— Tenant isolation —");
@@ -165,6 +168,7 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
   r = await call("/auth/register", { method: "POST", body: { email: emailB, password: pass1 } });
   ok("user B registered", r.status === 201 && r.data.token);
   const tokenB = r.data.token;
+  const userBId = r.data.user.id;
   const aIds = [wsA.id, wsB.id, wsC.id];
 
   r = await call("/workspaces", { token: tokenB });
@@ -217,6 +221,21 @@ const call = async (path, { method = "GET", body, token, headers: extraHeaders =
     const d = await call("/workspaces", { token });
     ok("all of A's workspaces survive B's attacks", d.status === 200 && d.data.workspaces.length === 3);
   }
+
+  console.log("— Phase 1.4: task assignment to a REAL user id —");
+  r = await call(`/workspaces/${wsB.id}/tasks`, {
+    method: "POST",
+    token,
+    body: { title: "Task assigned to User B", assigned_to: userBId, estimated_hours: 8 },
+  });
+  ok("task CREATE with valid assigned_to → 201 + stored", r.status === 201 && r.data.task.assigned_to === userBId, `got ${r.status}`);
+  const assignedToTask = r.data.task;
+  r = await call(`/workspaces/${wsB.id}/tasks/${assignedToTask.id}`, {
+    method: "PATCH",
+    token,
+    body: { status: "in_progress", assigned_to: userBId },
+  });
+  ok("task PATCH with valid assigned_to persists", r.status === 200 && r.data.task.assigned_to === userBId, `got ${r.status}`);
 
   console.log("— Cleanup —");
   for (const id of [wsA.id, wsB.id, wsC.id]) {

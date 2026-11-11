@@ -1,5 +1,6 @@
 import { Router } from "express";
 import db from "../db.js";
+import { strField, numField, enumField } from "../lib/validate.js";
 
 const router = Router();
 
@@ -28,6 +29,21 @@ export async function scopeSummary(workspaceId) {
   };
 }
 
+/**
+ * Phase 1.4: assigned_to pre-validation. task_lists.assigned_to is an
+ * INTEGER FK to users(id); checking here turns a mid-transaction FK
+ * violation (500 + rollback) into a deterministic 400 before any write.
+ * Returns { value: userId|null } or { error }.
+ */
+async function resolveAssignedTo(raw) {
+  if (raw === undefined || raw === null || raw === "") return { value: null };
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return { error: "assigned_to must be a valid user id" };
+  const user = await db.prepare("SELECT id FROM users WHERE id = ?").get(id);
+  if (!user) return { error: "Assigned user does not exist" };
+  return { value: id };
+}
+
 // All routes expect req.workspace
 
 /** GET /workspaces/:id/tasks?status= */
@@ -50,12 +66,24 @@ router.get("/", async (req, res) => {
 router.post("/", async (req, res) => {
   const title = String(req.body?.title || "").trim();
   if (!title) return res.status(400).json({ error: "Task title is required" });
+  // Phase 1.4: title cap consistent with SOPs
+  if (strField(title, { name: "Task title", max: 200 }).error)
+    return res.status(400).json({ error: "Task title too long (max 200 chars)" });
 
-  const status = ["todo", "in_progress", "done"].includes(req.body?.status)
-    ? req.body.status
-    : "todo";
-  const hours = Number(req.body?.estimated_hours);
-  const estimatedHours = Number.isFinite(hours) && hours >= 0 ? hours : 1;
+  const statusV = enumField(req.body?.status, ["todo", "in_progress", "done"], { name: "status", fallback: "todo" });
+  if (statusV.error) return res.status(400).json({ error: statusV.error });
+  const status = statusV.value;
+
+  // Phase 1.4: forecasts capped at 0–1000 (missing → default 1)
+  const hoursV = numField(req.body?.estimated_hours, {
+    name: "estimated_hours", min: 0, max: 1000, fallback: 1,
+  });
+  if (hoursV.error) return res.status(400).json({ error: hoursV.error });
+  const estimatedHours = hoursV.value;
+
+  // Phase 1.4: pre-validate the assignee exists (clean 400, not a 500 rollback)
+  const assignedToV = await resolveAssignedTo(req.body?.assigned_to);
+  if (assignedToV.error) return res.status(400).json({ error: assignedToV.error });
 
   // Note: even when created directly as done, estimated hours are forecast —
   // the Scope Meter only counts actual tracked time (P2 model).
@@ -63,7 +91,7 @@ router.post("/", async (req, res) => {
     .prepare(
       "INSERT INTO task_lists (workspace_id, title, status, estimated_hours, assigned_to) VALUES (?, ?, ?, ?, ?) RETURNING id"
     )
-    .run(req.workspace.id, title, status, estimatedHours, req.body?.assigned_to ?? null);
+    .run(req.workspace.id, title, status, estimatedHours, assignedToV.value);
 
   const task = await db.prepare("SELECT * FROM task_lists WHERE id = ?").get(lastID);
   res.status(201).json({ task, scope: await scopeSummary(req.workspace.id) });
@@ -89,6 +117,12 @@ router.patch("/:taskId", async (req, res) => {
     return res.status(400).json({ error: "Invalid status" });
   }
 
+  // Phase 1.4: pre-validate the assignee exists BEFORE the tx — a bad
+  // assigned_to is now a deterministic 400 instead of a mid-transaction
+  // FK violation (500 + rollback). Status stays untouched either way.
+  const assignedToV = await resolveAssignedTo(req.body?.assigned_to);
+  if (assignedToV.error) return res.status(400).json({ error: assignedToV.error });
+
   try {
     await db.tx(async (txDb) => {
       if (status !== undefined) {
@@ -96,7 +130,7 @@ router.patch("/:taskId", async (req, res) => {
       }
       if (req.body?.assigned_to !== undefined) {
         await txDb.prepare("UPDATE task_lists SET assigned_to = ? WHERE id = ?").run(
-          req.body.assigned_to,
+          assignedToV.value,
           row.id
         );
       }

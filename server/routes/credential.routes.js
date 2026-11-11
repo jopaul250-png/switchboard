@@ -3,6 +3,7 @@ import db from "../db.js";
 import { encryptSecret, decryptSecret } from "../lib/crypto.js";
 import { verifyVaultToken } from "../lib/jwt.js";
 import { revealLimiter } from "../lib/rateLimits.js";
+import { strField } from "../lib/validate.js";
 
 const router = Router();
 
@@ -27,10 +28,17 @@ router.post("/", async (req, res) => {
   const accountName = String(req.body?.account_name || "").trim();
   const secret = req.body?.encrypted_password_or_token ?? req.body?.secret;
   if (!accountName) return res.status(400).json({ error: "Account name is required" });
+  if (strField(accountName, { name: "Account name", max: 120 }).error)
+    return res.status(400).json({ error: "Account name too long (max 120 chars)" });
   if (secret === undefined || secret === null || String(secret).length === 0)
     return res.status(400).json({ error: "Password or token value is required" });
+  // Phase 1.4: cap plaintext size BEFORE encryption (10k chars is generous)
+  if (strField(String(secret), { name: "Secret", max: 10000 }).error)
+    return res.status(400).json({ error: "Secret too long (max 10000 chars)" });
 
   const username = req.body?.username ? String(req.body.username) : null;
+  if (username && strField(username, { name: "Username", max: 120 }).error)
+    return res.status(400).json({ error: "Username too long (max 120 chars)" });
   const enc = encryptSecret(String(secret));
 
   const { lastID } = await db

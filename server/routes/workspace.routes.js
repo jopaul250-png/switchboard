@@ -3,6 +3,7 @@ import db, { seedPulseQueues } from "../db.js";
 import planLimits, { MAX_FREE_WORKSPACES } from "../middleware/planLimits.js";
 import workspaceScope from "../middleware/workspaceScope.js";
 import { scopeSummary } from "./task.routes.js";
+import { strField, numField } from "../lib/validate.js";
 
 const router = Router();
 
@@ -40,9 +41,12 @@ router.post("/", planLimits, async (req, res) => {
   if (name.length > 60) return res.status(400).json({ error: "Name too long (max 60 chars)" });
 
   const plan = req.body?.plan_type === "premium" ? "premium" : "free";
-  const contractHours = Number.isFinite(Number(req.body?.contract_hours))
-    ? Math.max(0, Number(req.body.contract_hours))
-    : 40;
+  // Phase 1.4: explicit 0–10000 bounds (previously silently defaulted on garbage)
+  const contractHoursV = numField(req.body?.contract_hours, {
+    name: "contract_hours", min: 0, max: 10000, fallback: 40,
+  });
+  if (contractHoursV.error) return res.status(400).json({ error: contractHoursV.error });
+  const contractHours = contractHoursV.value;
 
   // Test-only injection hook: a mid-transaction failure AFTER the INSERT.
   // Requires ALL of: the server to run with SWITCHBOARD_ALLOW_TX_INJECTION=1,
@@ -98,30 +102,32 @@ router.patch("/:workspaceId", workspaceScope, async (req, res) => {
   const errors = [];
 
   if ("name" in req.body) {
-    const name = String(req.body.name || "").trim();
-    if (!name) errors.push("Name cannot be empty");
-    else updates.name = name;
+    // Phase 1.4: PATCH enforces the same 60-char cap as POST
+    const nameV = strField(req.body.name, { name: "Name", max: 60, required: true });
+    if (nameV.error) errors.push(nameV.error);
+    else updates.name = nameV.value;
   }
   if ("plan_type" in req.body) {
     if (!["free", "premium"].includes(req.body.plan_type)) errors.push("Invalid plan_type");
     else updates.plan_type = req.body.plan_type;
   }
   if ("contract_hours" in req.body) {
-    const n = Number(req.body.contract_hours);
-    if (!Number.isFinite(n) || n < 0) errors.push("contract_hours must be a positive number");
-    else updates.contract_hours = n;
+    // Phase 1.4: 0–10000 bounds
+    const v = numField(req.body.contract_hours, { name: "contract_hours", min: 0, max: 10000 });
+    if (v.error) errors.push(v.error);
+    else updates.contract_hours = v.value;
   }
   if ("hours_manual" in req.body) {
     // P2: manual adjustments are recorded separately from tracked actuals
-    const n = Number(req.body.hours_manual);
-    if (!Number.isFinite(n) || n < 0) errors.push("hours_manual must be a positive number");
-    else updates.hours_manual = n;
+    const v = numField(req.body.hours_manual, { name: "hours_manual", min: 0, max: 10000 });
+    if (v.error) errors.push(v.error);
+    else updates.hours_manual = v.value;
   }
   // legacy: accept hours_used as a manual adjustment value for old clients
   if ("hours_used" in req.body) {
-    const n = Number(req.body.hours_used);
-    if (!Number.isFinite(n) || n < 0) errors.push("hours_used must be a positive number");
-    else updates.hours_manual = n;
+    const v = numField(req.body.hours_used, { name: "hours_used", min: 0, max: 10000 });
+    if (v.error) errors.push(v.error);
+    else updates.hours_manual = v.value;
   }
   if (errors.length) return res.status(400).json({ error: errors.join("; ") });
   if (!Object.keys(updates).length) return res.status(400).json({ error: "Nothing to update" });

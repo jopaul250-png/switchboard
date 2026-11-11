@@ -4,6 +4,7 @@ import { signToken, signVaultToken } from "../lib/jwt.js";
 import { hashPassword, comparePassword } from "../lib/passwords.js";
 import { authIpLimiter, loginAccountLimiter } from "../lib/rateLimits.js";
 import authRequired from "../middleware/authRequired.js";
+import { strField } from "../lib/validate.js";
 
 const router = Router();
 
@@ -22,6 +23,9 @@ router.get("/me", authRequired, (req, res) => {
  */
 router.post("/verify-password", authIpLimiter, authRequired, async (req, res) => {
   const password = String(req.body?.password || "");
+  // Phase 1.4: cap password length BEFORE bcrypt (long inputs waste hash cycles)
+  const pwV = strField(password, { name: "Password", max: 200 });
+  if (pwV.error) return res.status(400).json({ error: pwV.error });
   const row = await db
     .prepare("SELECT password_hash FROM users WHERE id = ?")
     .get(req.user.id);
@@ -42,6 +46,8 @@ router.post("/register", authIpLimiter, async (req, res) => {
   if (!validateEmail(email)) return res.status(400).json({ error: "Valid email is required" });
   if (password.length < 8)
     return res.status(400).json({ error: "Password must be at least 8 characters" });
+  if (strField(password, { name: "Password", max: 200 }).error)
+    return res.status(400).json({ error: "Password must be 200 characters or less" });
 
   try {
     const { lastID } = await db
@@ -62,6 +68,9 @@ router.post("/register", authIpLimiter, async (req, res) => {
 router.post("/login", authIpLimiter, loginAccountLimiter, async (req, res) => {
   const email = String(req.body?.email || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
+  // Phase 1.4: cap password length BEFORE bcrypt
+  const pwV = strField(password, { name: "Password", max: 200 });
+  if (pwV.error) return res.status(400).json({ error: pwV.error });
 
   const row = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
   if (!row) return res.status(401).json({ error: "Invalid email or password" });

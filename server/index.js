@@ -17,6 +17,15 @@ import timeLogRoutes from "./routes/timeLog.routes.js";
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Phase 1.4: production MUST declare an explicit origin allowlist. Without
+// it the CORS middleware above runs in "open" mode and any origin could
+// make credentialed requests to the API. Same discipline as JWT_SECRET /
+// ENCRYPTION_KEY boot checks: bad config kills startup, not runtime.
+if (process.env.NODE_ENV === "production" && !process.env.CORS_ORIGIN) {
+  console.error("[switchboard] Boot aborted: CORS_ORIGIN must be set in production (comma-separated exact origins, e.g. https://switchboard-va.vercel.app).");
+  process.exit(1);
+}
+
 /* P5: the lib/jwt.js + lib/crypto.js modules fail boot in production when
    secrets are missing or insecure. Dev-only fallbacks stay local to dev. */
 
