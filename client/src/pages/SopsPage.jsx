@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useBlocker } from "react-router-dom";
 import { api } from "../api/client.js";
 import { useWorkspaces } from "../context/WorkspaceContext.jsx";
 import { Badge, Button, Input, EmptyState, ConfirmModal, useToast } from "../components/ui.jsx";
 import { Search, Plus, Doc, Trash, ArrowLeft } from "../components/icons.jsx";
+import { hasChanges, beforeUnloadGuard } from "../lib/dirtyGuard.js";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -21,6 +23,10 @@ export default function SopsPage() {
   // P1: in-app deletion confirm (replaces native confirm())
   const [pendingDelete, setPendingDelete] = useState(null); // sop object | null
   const [deleting, setDeleting] = useState(false);
+  // Phase 2.3: unsaved-changes guard — baseline snapshot + leave confirmation
+  const baselineRef = useRef(null); // draft snapshot taken when the editor opened
+  const dirtyRef = useRef(false);
+  const [leaveTarget, setLeaveTarget] = useState(null); // null | "route" | "back"
 
   useEffect(() => {
     if (!active) return;
@@ -33,13 +39,39 @@ export default function SopsPage() {
   }, [active?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const openNew = () => {
-    setDraft({ title: "", category: "general", content: "# Heading\n\nDescribe the rule here." });
+    const template = { title: "", category: "general", content: "# Heading\n\nDescribe the rule here." };
+    baselineRef.current = template;
+    setDraft(template);
     setEditing("new");
   };
   const openEdit = (sop) => {
-    setDraft({ title: sop.title, category: sop.category, content: sop.content });
+    const base = { title: sop.title, category: sop.category, content: sop.content };
+    baselineRef.current = base;
+    setDraft(base);
     setEditing(sop);
   };
+
+  /* Phase 2.3: dirty tracking — refreshed every render so the blocker and
+     beforeunload handlers always see the current state. */
+  dirtyRef.current = Boolean(editing && hasChanges(draft, baselineRef.current));
+
+  /* Phase 2.3: intercept in-app navigation (sidebar links, back/forward)
+     while the draft is dirty; the leave modal asks before discarding. */
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirtyRef.current && currentLocation.pathname !== nextLocation.pathname
+  );
+  useEffect(() => {
+    if (blocker.state === "blocked") setLeaveTarget("route");
+  }, [blocker.state]);
+
+  /* Phase 2.3: refuse tab close / reload while the draft is dirty. */
+  useEffect(() => {
+    if (!editing) return;
+    const handler = (e) => beforeUnloadGuard(e, dirtyRef.current);
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [editing]);
 
   const save = async () => {
     // Never silently blocked: if a title is missing, surface it instead of a dead button.
@@ -91,13 +123,33 @@ export default function SopsPage() {
     }
   };
 
+  /* Phase 2.3: leave confirmation — route-blocked or Back-to-vault, both
+     discard the draft only on explicit confirmation. */
+  const confirmLeave = () => {
+    const target = leaveTarget;
+    setLeaveTarget(null);
+    if (target === "route") {
+      if (blocker.state === "blocked") blocker.proceed();
+    } else if (target === "back") {
+      setEditing(null);
+    }
+  };
+  const cancelLeave = () => {
+    setLeaveTarget(null);
+    if (blocker.state === "blocked") blocker.reset();
+  };
+
   if (editing) {
     /* ================= Split-pane editor ================= */
     return (
       <div className="flex h-[calc(100vh-130px)] flex-col">
         {/* editor toolbar */}
         <div className="flex items-center gap-3">
-          <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => (dirtyRef.current ? setLeaveTarget("back") : setEditing(null))}
+          >
             <ArrowLeft className="h-3.5 w-3.5" /> Back to vault
           </Button>
           <div className="flex-1" />
@@ -138,6 +190,19 @@ export default function SopsPage() {
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{draft.content}</ReactMarkdown>
           </div>
         </div>
+
+        {/* Phase 2.3: unsaved-changes confirmation (route guard + Back to vault) */}
+        {leaveTarget && (
+          <ConfirmModal
+            open
+            onClose={cancelLeave}
+            onConfirm={confirmLeave}
+            tone="warning"
+            title="Leave with unsaved changes?"
+            message="This draft has changes that were not saved yet. Leaving now will discard them."
+            confirmLabel="Discard Changes"
+          />
+        )}
       </div>
     );
   }
